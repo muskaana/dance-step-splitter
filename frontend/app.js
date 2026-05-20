@@ -38,6 +38,7 @@ const quickSegments = document.getElementById("quick-segments");
 const quickSegmentsBtn = document.getElementById("quick-segments-btn");
 const quickSegmentsLabel = document.getElementById("quick-segments-label");
 const quickSegmentsMenu = document.getElementById("quick-segments-menu");
+const restartSegmentBtn = document.getElementById("restart-segment-btn");
 
 const emptyState = document.getElementById("empty-state");
 const emptyStateLibraryLink = document.getElementById("empty-state-library-link");
@@ -270,9 +271,11 @@ function renderQuickSegments(segments) {
   if (!segments || !segments.length) {
     quickSegments.classList.add("hidden");
     quickSegmentsMenu.classList.add("hidden");
+    restartSegmentBtn.classList.add("hidden");
     return;
   }
   quickSegments.classList.remove("hidden");
+  restartSegmentBtn.classList.remove("hidden");
 
   quickSegmentsMenu.innerHTML = "";
   for (const seg of segments) {
@@ -346,6 +349,19 @@ quickSegmentsBtn.addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
   if (!quickSegments.contains(e.target)) {
     quickSegmentsMenu.classList.add("hidden");
+  }
+});
+
+restartSegmentBtn.addEventListener("click", () => {
+  // loopBounds is set whenever a segment / combination / workshop phase is
+  // active — jump to its start. Otherwise rewind the video to 0.
+  const target = loopBounds ? loopBounds.start : 0;
+  try {
+    video.currentTime = target;
+    resetCountBeat();
+    if (video.paused) video.play().catch(() => {});
+  } catch {
+    /* video not ready yet */
   }
 });
 

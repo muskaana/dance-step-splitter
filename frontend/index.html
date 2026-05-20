@@ -520,23 +520,33 @@
           </div>
 
           <div class="bg-black rounded-xl overflow-hidden shadow-lg aspect-video relative">
-            <!-- Quick segment picker — overlays the top-right corner so you
-                 can jump between segments while watching without scrolling
-                 to the sidebar. Single-select for fast switching; the
-                 sidebar still handles multi-select for combining. -->
-            <div id="quick-segments" class="absolute top-3 right-3 z-10 hidden">
+            <!-- Top-right overlay: restart current segment + quick segment
+                 picker. Restart jumps to loopBounds.start (current segment,
+                 combined selection, or workshop phase). Dropdown is for
+                 multi-select segment switching while watching. -->
+            <div class="absolute top-3 right-3 z-10 flex items-start gap-2">
               <button
-                id="quick-segments-btn"
+                id="restart-segment-btn"
                 type="button"
-                class="bg-black/65 backdrop-blur text-white text-xs font-medium px-3 py-1.5 rounded-md hover:bg-black/85 flex items-center gap-1.5 shadow"
+                class="hidden bg-black/65 backdrop-blur text-white text-xs font-medium px-3 py-1.5 rounded-md hover:bg-black/85 shadow"
+                title="Restart from the beginning of the current segment"
               >
-                <span id="quick-segments-label" class="truncate max-w-[160px]">Pick segment</span>
-                <span class="text-[10px]">▼</span>
+                ↻ Restart
               </button>
-              <div
-                id="quick-segments-menu"
-                class="hidden mt-1 bg-white shadow-xl rounded-md border border-slate-200 min-w-[180px] max-h-72 overflow-y-auto"
-              ></div>
+              <div id="quick-segments" class="hidden relative">
+                <button
+                  id="quick-segments-btn"
+                  type="button"
+                  class="bg-black/65 backdrop-blur text-white text-xs font-medium px-3 py-1.5 rounded-md hover:bg-black/85 flex items-center gap-1.5 shadow"
+                >
+                  <span id="quick-segments-label" class="truncate max-w-[160px]">Pick segment</span>
+                  <span class="text-[10px]">▼</span>
+                </button>
+                <div
+                  id="quick-segments-menu"
+                  class="hidden absolute right-0 top-full mt-1 bg-white shadow-xl rounded-md border border-slate-200 min-w-[180px] max-h-72 overflow-y-auto"
+                ></div>
+              </div>
             </div>
 
             <video
