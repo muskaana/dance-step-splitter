@@ -3,12 +3,20 @@ FROM python:3.11-slim
 # System deps:
 #  - ffmpeg: required by yt-dlp to merge separate video+audio streams.
 #  - libgl1, libglib2.0-0: needed by opencv-python's runtime.
+#  - libgles2, libegl1: needed by MediaPipe's pose landmarker (uses OpenGL ES).
+#  - libsm6, libxext6, libxrender1: opencv runtime dependencies that some
+#    distros leave out of slim images.
 #  - curl: lets us pre-fetch the MediaPipe pose model into the image so we
 #    don't re-download it on every container start.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         libgl1 \
         libglib2.0-0 \
+        libgles2 \
+        libegl1 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
