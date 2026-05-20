@@ -3,8 +3,6 @@
 const video = document.getElementById("player");
 const segmentGrid = document.getElementById("segment-grid");
 const segmentCount = document.getElementById("segment-count");
-const loopDisplay = document.getElementById("loop-display");
-const clearBtn = document.getElementById("clear-btn");
 const mirrorBtn = document.getElementById("mirror-btn");
 const mirrorState = document.getElementById("mirror-state");
 const speedControls = document.getElementById("speed-controls");
@@ -59,6 +57,7 @@ const libraryCount = document.getElementById("library-count");
 const libraryCloseBtn = document.getElementById("library-close-btn");
 
 const editSegmentsBtn = document.getElementById("edit-segments-btn");
+const shareCurrentBtn = document.getElementById("share-current-btn");
 const segmentEditor = document.getElementById("segment-editor");
 const editorList = document.getElementById("editor-list");
 const editorAddBtn = document.getElementById("editor-add-btn");
@@ -112,6 +111,15 @@ let pendingFile = null;
 /** ID of the currently-loaded library entry (null until a video has been
     processed or opened from the library). Editor saves route here. */
 let currentVideoId = null;
+/** Permission level on the currently-loaded video: "owner", "edit", or "view".
+    Drives whether the segment editor is reachable. */
+let currentPermission = "owner";
+
+/** Polling state for collaborative edit sync. While a video is open we ping
+    /api/library/{video_id} every 15s; if `last_edited_at` changed since we
+    last looked, we re-render the segments. */
+let entryPollHandle = null;
+let lastEditedAtKnown = null;
 
 /** Pending crop bounds to apply once `loadedmetadata` fires — used when
     restoring a library entry that was processed with a crop. */
@@ -156,6 +164,43 @@ async function loadSegments() {
 /* Segment grid rendering + manual selection                         */
 /* ---------------------------------------------------------------- */
 
+/** Show/hide editing affordances based on the current video's permission.
+    "owner" and "edit" → Edit button enabled. "view" → hidden + banner shown. */
+function applyPermissionGating() {
+  const canEdit = currentPermission === "owner" || currentPermission === "edit";
+  const isOwner = currentPermission === "owner";
+  // Edit button in the segments header.
+  if (editSegmentsBtn) {
+    editSegmentsBtn.classList.toggle("hidden", !canEdit);
+  }
+  // Share-current button: only owners can manage sharing, and only when
+  // there's actually a loaded video.
+  if (shareCurrentBtn) {
+    shareCurrentBtn.classList.toggle("hidden", !(isOwner && currentVideoId));
+  }
+  // If the editor was open when permission changes (e.g. the user re-opened
+  // a view-only entry), bail out so the viewer can't keep typing.
+  if (!canEdit && typeof editing !== "undefined" && editing) {
+    exitEditMode();
+  }
+  // Surface a small inline indicator next to the segments title so viewers
+  // know why the Edit button is missing.
+  const headerEl = document.querySelector("#segment-grid")?.parentElement;
+  let badge = document.getElementById("view-only-badge");
+  if (currentPermission === "view") {
+    if (!badge && headerEl) {
+      badge = document.createElement("span");
+      badge.id = "view-only-badge";
+      badge.className =
+        "text-[10px] uppercase tracking-wide bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded ml-2";
+      badge.textContent = "View only";
+      headerEl.querySelector("h2")?.appendChild(badge);
+    }
+  } else if (badge) {
+    badge.remove();
+  }
+}
+
 function renderSegments(segments) {
   segmentGrid.innerHTML = "";
   if (!segments.length) {
@@ -185,25 +230,13 @@ function renderSegments(segments) {
   renderQuickSegments(segments);
 }
 
-/** Adjust the main grid's right-column width based on how many segments
-    exist, so a sparse video gets a wider player while a dense one keeps
-    the buttons readable. Only applies at the lg breakpoint and up. */
-function applySegmentsLayout(count) {
-  const main = document.getElementById("main-layout");
-  if (!main) return;
-  if (window.innerWidth < 1024) {
-    main.style.gridTemplateColumns = "";
-    return;
-  }
-  let width;
-  if (count <= 6) width = "240px";
-  else if (count <= 14) width = "260px";
-  else if (count <= 24) width = "300px";
-  else width = "340px";
-  main.style.gridTemplateColumns = `minmax(0, 1fr) ${width}`;
+// `applySegmentsLayout` was needed when segments lived in a right sidebar
+// whose width adapted to segment count. Now segments live below the video
+// in a full-width grid, so this is a no-op kept for backward-compat with the
+// two existing call sites (cheaper than removing them all).
+function applySegmentsLayout(_count) {
+  /* no-op */
 }
-
-window.addEventListener("resize", () => applySegmentsLayout(allSegments.length));
 
 /* ---------------------------------------------------------------- */
 /* Collapsible Add-a-video card                                      */
@@ -243,14 +276,15 @@ function renderQuickSegments(segments) {
     const item = document.createElement("button");
     item.dataset.id = String(seg.id);
     item.className =
-      "quick-seg w-full text-left text-xs px-3 py-1.5 hover:bg-indigo-50 flex items-center justify-between gap-2 border-b border-slate-100 last:border-b-0";
+      "quick-seg w-full text-left text-xs px-2.5 py-1.5 hover:bg-indigo-50 flex items-center gap-2 border-b border-slate-100 last:border-b-0";
     item.innerHTML = `
-      <span class="font-medium truncate min-w-0">${escapeAttr(seg.label)}</span>
+      <span class="quick-check w-3.5 h-3.5 rounded-sm border border-slate-300 flex-shrink-0 flex items-center justify-center text-[10px] text-white"></span>
+      <span class="font-medium truncate min-w-0 flex-1">${escapeAttr(seg.label)}</span>
       <span class="text-[10px] text-slate-500 font-mono whitespace-nowrap">${seg.start.toFixed(1)}–${seg.end.toFixed(1)}s</span>
     `;
-    item.addEventListener("click", () => {
-      quickPlaySegment(seg);
-      quickSegmentsMenu.classList.add("hidden");
+    item.addEventListener("click", (e) => {
+      e.stopPropagation(); // keep menu open so the user can pick several
+      quickToggleSegment(seg);
     });
     quickSegmentsMenu.appendChild(item);
   }
@@ -271,21 +305,33 @@ function updateQuickSegmentsState() {
   }
   const activeIds = new Set(selectedSegments.map((s) => String(s.id)));
   quickSegmentsMenu.querySelectorAll(".quick-seg").forEach((el) => {
-    el.classList.toggle("bg-indigo-50", activeIds.has(el.dataset.id));
-    el.classList.toggle("text-indigo-700", activeIds.has(el.dataset.id));
+    const isActive = activeIds.has(el.dataset.id);
+    el.classList.toggle("bg-indigo-50", isActive);
+    el.classList.toggle("text-indigo-700", isActive);
+    const check = el.querySelector(".quick-check");
+    if (check) {
+      check.classList.toggle("bg-indigo-600", isActive);
+      check.classList.toggle("border-indigo-600", isActive);
+      check.textContent = isActive ? "✓" : "";
+    }
   });
 }
 
-function quickPlaySegment(seg) {
+function quickToggleSegment(seg) {
   if (workshop.active) return; // workshop owns the loop
-  // Single-select: replace whatever was selected with just this segment.
-  selectedSegments = [seg];
-  document
-    .querySelectorAll(".segment-btn.active")
-    .forEach((b) => b.classList.remove("active"));
-  document
-    .querySelectorAll(`.segment-btn[data-id="${seg.id}"]`)
-    .forEach((b) => b.classList.add("active"));
+  // Multi-select: same semantics as the sidebar — toggle this segment in/out.
+  const idx = selectedSegments.findIndex((s) => s.id === seg.id);
+  if (idx >= 0) {
+    selectedSegments.splice(idx, 1);
+    document
+      .querySelectorAll(`.segment-btn[data-id="${seg.id}"]`)
+      .forEach((b) => b.classList.remove("active"));
+  } else {
+    selectedSegments.push(seg);
+    document
+      .querySelectorAll(`.segment-btn[data-id="${seg.id}"]`)
+      .forEach((b) => b.classList.add("active"));
+  }
   onManualSelectionChanged();
 }
 
@@ -324,9 +370,7 @@ function onManualSelectionChanged() {
   if (workshop.active) return; // workshop owns loopBounds
   loopBounds = calculateLoopBounds();
   resetCountBeat();
-  updateLoopDisplay();
   segmentCount.textContent = `${selectedSegments.length} selected`;
-  clearBtn.disabled = selectedSegments.length === 0;
   if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
 
   if (loopBounds) {
@@ -356,13 +400,9 @@ function calculateLoopBounds() {
   return { start, end };
 }
 
-function updateLoopDisplay() {
-  if (!loopBounds) {
-    loopDisplay.textContent = "— → —";
-    return;
-  }
-  loopDisplay.textContent = `${loopBounds.start.toFixed(2)}s → ${loopBounds.end.toFixed(2)}s`;
-}
+// The visible "Loop" status card was removed — keep a no-op so existing
+// call sites (workshop transitions, library load) don't need to be touched.
+function updateLoopDisplay() {}
 
 /* ---------------------------------------------------------------- */
 /* Workshop plan generator                                           */
@@ -760,7 +800,6 @@ mirrorBtn.addEventListener("click", () => {
   mirrorBtn.classList.toggle("border-indigo-300", isMirrored);
 });
 
-clearBtn.addEventListener("click", clearSelection);
 workshopBtn.addEventListener("click", () => {
   workshop.active ? stopWorkshop() : startWorkshop();
 });
@@ -1098,8 +1137,13 @@ function applyProcessResponse(data) {
   hideEmptyState();
   allSegments = data.segments;
   currentVideoId = data.video_id || null;
+  // A freshly processed video is always owned by the requesting user.
+  currentPermission = "owner";
+  applyPermissionGating();
   renderSegments(allSegments);
   refreshLibrary();
+  // Start watching for collaborator edits on the video we just made.
+  startEntryPoll(currentVideoId, null);
 
   let msg = `Done — ${data.segment_count} segments from ${data.duration.toFixed(1)}s.`;
   if (data.tuning && data.tuning.example_count > 0) {
@@ -1173,6 +1217,12 @@ let editorDraft = [];
 let editing = false;
 
 function enterEditMode() {
+  // Defence-in-depth: even if the Edit button leaked through somehow, refuse
+  // to open the editor when the user has view-only access.
+  if (currentPermission === "view") {
+    alert("This video is shared with you as view-only — only the owner can edit segments.");
+    return;
+  }
   if (workshop.active) stopWorkshop();
   clearSelection();
   editing = true;
@@ -1363,6 +1413,8 @@ async function saveEditorDraft() {
       }
       const data = await res.json();
       saved = data.segments;
+      // Record our own edit so the next poll doesn't flag it as remote.
+      lastEditedAtKnown = data.last_edited_at || lastEditedAtKnown;
       await refreshLibrary();
     } else {
       // Untitled working sequence — write to sequence.json only.
@@ -1388,6 +1440,19 @@ async function saveEditorDraft() {
 }
 
 editSegmentsBtn.addEventListener("click", enterEditMode);
+
+// Share the currently-loaded video — reuses the same modal the library uses.
+shareCurrentBtn.addEventListener("click", () => {
+  if (!currentVideoId) return;
+  // Find the library entry for the current video so the modal can show its
+  // title. Fall back to a stub if the entry isn't cached yet.
+  const entry =
+    libraryCache.find((i) => i.video_id === currentVideoId) || {
+      video_id: currentVideoId,
+      title: "this video",
+    };
+  openShareModal(entry);
+});
 editorCancelBtn.addEventListener("click", exitEditMode);
 editorSaveBtn.addEventListener("click", saveEditorDraft);
 editorAddBtn.addEventListener("click", addSegmentAtPlayhead);
@@ -1454,9 +1519,11 @@ function renderLibrary() {
     const renameBtnHtml = isOwner
       ? '<button class="lib-rename text-xs text-slate-400 hover:text-slate-700 flex-shrink-0" title="Rename">✎</button>'
       : "";
+    // Top-right column of each card: a labelled Share button on its own row,
+    // delete icon underneath. Owner-only.
     const ownerActionsHtml = isOwner
       ? `
-        <button class="lib-share text-xs text-slate-500 hover:text-indigo-700" title="Share">⇪</button>
+        <button class="lib-share px-2.5 py-1 text-xs rounded-md border border-indigo-200 bg-white text-indigo-700 font-semibold hover:bg-indigo-50 whitespace-nowrap">Share</button>
         <button class="lib-delete text-xs text-rose-500 hover:text-rose-700" title="Remove from library">🗑</button>`
       : "";
 
@@ -1603,7 +1670,11 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     video.load();
     pendingFile = null;
     currentVideoId = data.video_id;
+    currentPermission = data.permission || "owner";
+    applyPermissionGating();
     youtubeUrlInput.value = data.source_url || "";
+    // Watch for upstream edits (collaborator or owner) on this entry.
+    startEntryPoll(currentVideoId, data.last_edited_at || null);
 
     allSegments = data.segments;
     renderSegments(allSegments);
@@ -1649,6 +1720,60 @@ libraryCloseBtn.addEventListener("click", () => {
   libraryPanel.classList.add("hidden");
   stopLibraryPoll();
 });
+
+/* ---------------------------------------------------------------- */
+/* Per-entry sync — polls the open video's segments every 15s so a   */
+/* collaborator's edits (or owner's edits on a viewer's screen)      */
+/* appear without a manual refresh.                                  */
+/* ---------------------------------------------------------------- */
+
+function stopEntryPoll() {
+  if (entryPollHandle) {
+    clearInterval(entryPollHandle);
+    entryPollHandle = null;
+  }
+}
+
+function startEntryPoll(videoId, initialLastEditedAt) {
+  stopEntryPoll();
+  if (!videoId) return;
+  lastEditedAtKnown = initialLastEditedAt || null;
+  entryPollHandle = setInterval(
+    () => checkRemoteEntryUpdates(videoId),
+    15000
+  );
+}
+
+async function checkRemoteEntryUpdates(videoId) {
+  // Stale poll — a different entry is now loaded.
+  if (videoId !== currentVideoId) {
+    stopEntryPoll();
+    return;
+  }
+  // Don't disrupt active loop owners.
+  if (workshop.active) return;
+  // Don't trash the user's open-but-unsaved edit draft.
+  if (typeof editing !== "undefined" && editing) return;
+
+  try {
+    const res = await fetch(`/api/library/${encodeURIComponent(videoId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const remoteEdited = data.last_edited_at || null;
+    if (remoteEdited === lastEditedAtKnown) return;
+
+    lastEditedAtKnown = remoteEdited;
+    allSegments = data.segments;
+    renderSegments(allSegments);
+    showProcessingSuccess(
+      currentPermission === "owner"
+        ? "Segments updated by a collaborator."
+        : "Segments updated by the owner."
+    );
+  } catch {
+    /* network blip — try again next tick */
+  }
+}
 
 /* ---------------------------------------------------------------- */
 /* Tutorial overlay                                                  */

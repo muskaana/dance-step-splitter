@@ -467,9 +467,11 @@
         </div>
       </header>
 
-      <!-- Main layout: theatre-mode width by default; JS adjusts the right
-           sidebar width based on how many segments there are. -->
-      <main id="main-layout" class="grid grid-cols-1 gap-6 lg:[grid-template-columns:minmax(0,1fr)_280px]">
+      <!-- Main layout: video full width, segments stacked below for max
+           player real estate. Quick-segment dropdown overlays the video for
+           in-flow switching; the sidebar-turned-bottom-bar is for editing
+           and multi-select with more screen space. -->
+      <main id="main-layout" class="flex flex-col gap-6">
         <!-- LEFT: video + controls -->
         <section class="space-y-4 min-w-0">
           <!-- Workshop Mode banner -->
@@ -601,21 +603,6 @@
             </button>
           </div>
 
-          <div class="bg-white rounded-xl shadow-sm p-4 text-sm text-slate-600">
-            <div class="flex justify-between items-center">
-              <span>
-                Loop:
-                <span id="loop-display" class="font-mono text-slate-900">— → —</span>
-              </span>
-              <button
-                id="clear-btn"
-                class="text-indigo-600 hover:text-indigo-800 font-medium disabled:text-slate-400 disabled:cursor-not-allowed"
-                disabled
-              >
-                Clear selection
-              </button>
-            </div>
-          </div>
         </section>
 
         <!-- RIGHT: segment grid + editor -->
@@ -631,14 +618,21 @@
                 >
                   Edit
                 </button>
+                <button
+                  id="share-current-btn"
+                  class="hidden text-xs px-2.5 py-1 rounded-md border border-indigo-200 bg-white text-indigo-700 font-semibold hover:bg-indigo-50"
+                  title="Share this video"
+                >
+                  Share
+                </button>
               </div>
             </div>
 
             <div
               id="segment-grid"
-              class="flex flex-col gap-1.5 max-h-[70vh] overflow-y-auto pr-1"
+              class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-1.5 max-h-[50vh] overflow-y-auto pr-1"
             >
-              <p class="text-sm text-slate-500 text-center py-8">
+              <p class="col-span-full text-sm text-slate-500 text-center py-8">
                 Loading segments…
               </p>
             </div>
