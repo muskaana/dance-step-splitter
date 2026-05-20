@@ -512,97 +512,68 @@ def _has_audio_stream(path: Path) -> bool:
         return False
 
 
-def _normalize_for_concat(input_path: Path, output_path: Path) -> None:
-    """Re-encode a single clip into a known-good format so concat-demux can
-    stream-copy them together. Forces:
-      - H.264 video, yuv420p, even dimensions, 30 fps
-      - AAC audio, 44.1 kHz stereo (silence if the source had no audio track)
-    """
-    has_audio = _has_audio_stream(input_path)
-    cmd: list[str] = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(input_path),
-    ]
-    # When the input has no audio we pipe in a silent stereo source that
-    # `-shortest` will truncate to the video length.
-    if not has_audio:
-        cmd.extend([
-            "-f", "lavfi",
-            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-        ])
-
-    cmd.extend([
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-    ])
-    if has_audio:
-        cmd.extend(["-af", "aresample=async=1"])
-    else:
-        # Map video from input 0, silent audio from input 1.
-        cmd.extend(["-map", "0:v:0", "-map", "1:a:0", "-shortest"])
-
-    cmd.extend(["-movflags", "+faststart", str(output_path)])
-
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        msg = (result.stderr or "").strip().splitlines()[-3:]
-        raise RuntimeError(
-            f"Normalising {input_path.name} failed: " + " | ".join(msg)
-        )
-
-
 def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
-    """Concatenate N videos into one MP4.
+    """Concatenate N videos into one MP4 in a single ffmpeg pass.
 
-    Two-pass approach for maximum robustness across mixed codecs / sample
-    rates / aspect ratios:
-      1. Re-encode each input into a normalized intermediate (same codec,
-         pixel format, frame rate, audio format — silent track padded in
-         if the input had no audio).
-      2. Concat-demux the intermediates with stream-copy (fast, no quality
-         loss on top of step 1).
+    Each input's audio is normalized to 44.1 kHz stereo via `aformat` so the
+    concat filter doesn't choke on mismatched sample rates / channel layouts
+    (the most common failure mode with phone clips from different cameras).
+
+    Uses `ultrafast` preset because we re-encode 100% of the output stream;
+    the file is plenty good for follow-on pose extraction and re-encoding
+    each frame at higher quality presets is a CPU waste on shared CPUs.
+
+    Requires every input to have an audio track. The single-pass filter
+    graph can't easily synthesize silence per-stream, so for now we fail
+    fast with a clear error if any input lacks audio.
     """
     if not input_paths:
         raise ValueError("No input videos to concatenate")
 
-    work_dir = output_path.parent / f".concat-{uuid.uuid4().hex[:8]}"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    normalized: list[Path] = []
-
-    try:
-        for i, src in enumerate(input_paths):
-            norm = work_dir / f"norm_{i:02d}.mp4"
-            _normalize_for_concat(src, norm)
-            normalized.append(norm)
-
-        # Build the concat-demuxer manifest. Paths are quoted to be safe with
-        # spaces / unusual characters.
-        manifest = work_dir / "concat.txt"
-        manifest.write_text(
-            "\n".join(f"file '{p.as_posix()}'" for p in normalized) + "\n"
+    missing_audio = [p.name for p in input_paths if not _has_audio_stream(p)]
+    if missing_audio:
+        raise RuntimeError(
+            "These clips have no audio track and can't be combined: "
+            + ", ".join(missing_audio)
+            + ". Re-record with sound or add a silent track via an external tool."
         )
 
-        cmd = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", str(manifest),
-            "-c", "copy",
+    n = len(input_paths)
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for p in input_paths:
+        cmd.extend(["-i", str(p)])
+
+    # Per-input normalization, then concat in one filter graph.
+    parts: list[str] = []
+    for i in range(n):
+        parts.append(
+            f"[{i}:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p,"
+            f"setpts=PTS-STARTPTS[v{i}];"
+        )
+        parts.append(
+            f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:"
+            f"channel_layouts=stereo,aresample=async=1,asetpts=PTS-STARTPTS[a{i}];"
+        )
+    chain = "".join(f"[v{i}][a{i}]" for i in range(n))
+    filter_str = "".join(parts) + f"{chain}concat=n={n}:v=1:a=1[v][a]"
+
+    cmd.extend(
+        [
+            "-filter_complex", filter_str,
+            "-map", "[v]",
+            "-map", "[a]",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             "-movflags", "+faststart",
             str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            msg = (result.stderr or "").strip().splitlines()[-3:]
-            raise RuntimeError("ffmpeg concat failed: " + " | ".join(msg))
-    finally:
-        # Always clean up the normalized intermediates + manifest.
-        for p in normalized:
-            p.unlink(missing_ok=True)
-        try:
-            (work_dir / "concat.txt").unlink(missing_ok=True)
-            work_dir.rmdir()
-        except Exception:
-            pass
+    )
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        msg = (result.stderr or "").strip().splitlines()[-3:]
+        raise RuntimeError("ffmpeg concat failed: " + " | ".join(msg))
 
 
 @app.post("/api/process-files", response_model=ProcessResponse)
