@@ -24,6 +24,7 @@ const sourceUploadRow = document.getElementById("source-upload");
 const youtubeUrlInput = document.getElementById("youtube-url");
 const youtubeQualitySelect = document.getElementById("youtube-quality");
 const uploadLabel = document.getElementById("upload-label");
+const uploadFileList = document.getElementById("upload-file-list");
 const processVideoBtn = document.getElementById("process-video-btn");
 const processSubtitle = document.getElementById("process-subtitle");
 const cropRow = document.getElementById("crop-row");
@@ -108,9 +109,10 @@ const cropPreviewStartBtn = document.getElementById("crop-preview-start-btn");
 const cropPreviewEndBtn = document.getElementById("crop-preview-end-btn");
 const cropResetBtn = document.getElementById("crop-reset-btn");
 
-/** Track the most recent file the user picked so the Process Video button
-    can re-run the file pipeline with updated crop bounds. */
-let pendingFile = null;
+/** Files the user has chosen for upload. Single entry = standard
+    `/api/process-file` flow. Two or more = `/api/process-files` which
+    ffmpeg-concatenates them into one routine. */
+let pendingFiles = [];
 
 /** ID of the currently-loaded library entry (null until a video has been
     processed or opened from the library). Editor saves route here. */
@@ -1117,15 +1119,24 @@ function updateProcessSubtitle() {
     }
     prefix = `YouTube ${youtubeQualitySelect.value}`;
   } else {
-    if (!pendingFile) {
+    if (!pendingFiles.length) {
       processSubtitle.textContent = "Choose a video file to enable.";
       processVideoBtn.disabled = true;
       return;
     }
-    prefix = `"${pendingFile.name}"`;
+    if (pendingFiles.length === 1) {
+      prefix = `"${pendingFiles[0].name}"`;
+    } else {
+      prefix = `${pendingFiles.length} clips combined`;
+    }
   }
   const crop = getCropBounds();
-  const cropStr = crop
+  // Combined uploads don't support pre-crop — they get re-encoded as one
+  // continuous video, and the user can re-process with crop afterward.
+  const isCombined = currentSource === "upload" && pendingFiles.length > 1;
+  const cropStr = isCombined
+    ? "no crop"
+    : crop
     ? `crop ${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s`
     : "full video";
   processSubtitle.textContent = `Will process ${prefix} · ${cropStr}.`;
@@ -1170,6 +1181,17 @@ async function processFile(file, crop) {
   return res.json();
 }
 
+async function processFiles(files) {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  const res = await fetch("/api/process-files", { method: "POST", body: form });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 function applyProcessResponse(data) {
   if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
   video.src = data.video_url;
@@ -1206,7 +1228,7 @@ processVideoBtn.addEventListener("click", async () => {
   if (currentSource === "youtube") {
     const url = youtubeUrlInput.value.trim();
     if (!url) return;
-  } else if (!pendingFile) {
+  } else if (!pendingFiles.length) {
     return;
   }
 
@@ -1214,17 +1236,24 @@ processVideoBtn.addEventListener("click", async () => {
   clearSelection();
 
   const crop = getCropBounds();
-  const cropMsg = crop
+  const isCombined = currentSource === "upload" && pendingFiles.length > 1;
+  const msg = isCombined
+    ? `Combining ${pendingFiles.length} clips and processing.`
+    : crop
     ? `Processing crop ${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s of your video.`
     : "Processing the full video.";
-  startProcessingBanner(cropMsg);
+  startProcessingBanner(msg);
   processVideoBtn.disabled = true;
 
   try {
-    const data =
-      currentSource === "youtube"
-        ? await processYouTube(youtubeUrlInput.value.trim(), crop)
-        : await processFile(pendingFile, crop);
+    let data;
+    if (currentSource === "youtube") {
+      data = await processYouTube(youtubeUrlInput.value.trim(), crop);
+    } else if (isCombined) {
+      data = await processFiles(pendingFiles);
+    } else {
+      data = await processFile(pendingFiles[0], crop);
+    }
     applyProcessResponse(data);
   } catch (err) {
     console.error(err);
@@ -1236,22 +1265,65 @@ processVideoBtn.addEventListener("click", async () => {
 
 /* ---------- File picker ---------- */
 
-videoFileInput.addEventListener("change", (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
+function renderUploadFileList() {
+  uploadFileList.innerHTML = "";
+  if (pendingFiles.length === 0) {
+    uploadFileList.classList.add("hidden");
+    uploadLabel.textContent = "Choose one or more video files…";
+    cropRow.classList.remove("hidden");
+    return;
+  }
+  uploadFileList.classList.remove("hidden");
+  uploadLabel.textContent =
+    pendingFiles.length === 1
+      ? "Replace file…"
+      : `Add more (${pendingFiles.length} selected)`;
 
-  // Preview the picked file locally so the user can see it + set crop bounds
-  // before kicking off the slow pipeline. Actual processing happens via the
-  // single Process Video button below.
-  if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
-  video.src = URL.createObjectURL(file);
-  video.load();
+  // Combined uploads can't be pre-cropped (the merged video doesn't exist
+  // yet) — hide the crop row while >1 file is queued.
+  cropRow.classList.toggle("hidden", pendingFiles.length > 1);
 
-  pendingFile = file;
+  pendingFiles.forEach((file, idx) => {
+    const li = document.createElement("li");
+    li.className =
+      "flex items-center gap-2 px-2 py-1 rounded-md bg-slate-50 border border-slate-200 text-xs";
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+    li.innerHTML = `
+      <span class="text-slate-400 font-mono w-5 text-right">${idx + 1}.</span>
+      <span class="flex-1 min-w-0 truncate" title="${escapeAttr(file.name)}">${escapeAttr(file.name)}</span>
+      <span class="text-slate-500 font-mono whitespace-nowrap">${sizeMb} MB</span>
+      <button class="upload-remove text-rose-500 hover:text-rose-700 text-sm leading-none" title="Remove">×</button>
+    `;
+    li.querySelector(".upload-remove").addEventListener("click", () => {
+      pendingFiles.splice(idx, 1);
+      onPendingFilesChanged();
+    });
+    uploadFileList.appendChild(li);
+  });
+}
+
+function onPendingFilesChanged() {
   currentVideoId = null;
-  uploadLabel.textContent = file.name;
+  // Preview shows the first file so the crop UI works for single-file uploads.
+  if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
+  if (pendingFiles.length === 1) {
+    video.src = URL.createObjectURL(pendingFiles[0]);
+    video.load();
+  } else if (pendingFiles.length === 0) {
+    showEmptyState();
+  }
+  renderUploadFileList();
   hideProcessingBanner();
   updateProcessSubtitle();
+}
+
+videoFileInput.addEventListener("change", (e) => {
+  const newFiles = Array.from(e.target.files || []);
+  if (!newFiles.length) return;
+  // Cap at 8 to match the backend; warn if the user goes over.
+  pendingFiles = pendingFiles.concat(newFiles).slice(0, 8);
+  e.target.value = ""; // allow re-selecting the same file
+  onPendingFilesChanged();
 });
 
 /* ---------------------------------------------------------------- */
@@ -1305,8 +1377,44 @@ function durationStatus(seg) {
   return { kind: "ok", label: `${d.toFixed(2)}s` };
 }
 
+/** Per-row input + status references, keyed by the seg object. Lets us
+    update a neighbouring row's inputs without re-rendering the whole list
+    (which would blow away focus while the user is still typing). */
+let editorRowRefs = new Map();
+
+/** Match adjacent segments when one's boundary changes:
+    - changing seg.start → previous segment's end snaps to the same value
+    - changing seg.end   → next segment's start snaps to the same value
+    Adjacency is determined by sorted start time so reordering edits behave. */
+function linkAdjacent(seg, side) {
+  const sorted = [...editorDraft].sort((a, b) => a.start - b.start);
+  const idx = sorted.indexOf(seg);
+  if (idx < 0) return;
+
+  let neighbor = null;
+  let field = null;
+  if (side === "start" && idx > 0) {
+    neighbor = sorted[idx - 1];
+    field = "end";
+    neighbor.end = seg.start;
+  } else if (side === "end" && idx < sorted.length - 1) {
+    neighbor = sorted[idx + 1];
+    field = "start";
+    neighbor.start = seg.end;
+  }
+  if (!neighbor) return;
+
+  // Reflect the change in the neighbour's row UI without re-rendering.
+  const refs = editorRowRefs.get(neighbor);
+  if (!refs) return;
+  if (field === "start") refs.startEl.value = neighbor.start.toFixed(2);
+  if (field === "end") refs.endEl.value = neighbor.end.toFixed(2);
+  refs.refreshStatus();
+}
+
 function renderEditor() {
   editorList.innerHTML = "";
+  editorRowRefs = new Map();
   if (!editorDraft.length) {
     editorList.innerHTML =
       '<p class="text-sm text-slate-500 text-center py-6">No segments. Add one with the playhead button below.</p>';
@@ -1351,14 +1459,24 @@ function renderEditor() {
       );
     }
 
+    editorRowRefs.set(seg, { startEl, endEl, refreshStatus });
+
     labelEl.addEventListener("input", () => { seg.label = labelEl.value; });
     startEl.addEventListener("input", () => {
       const v = parseFloat(startEl.value);
-      if (isFinite(v)) { seg.start = v; refreshStatus(); }
+      if (isFinite(v)) {
+        seg.start = v;
+        refreshStatus();
+        linkAdjacent(seg, "start");
+      }
     });
     endEl.addEventListener("input", () => {
       const v = parseFloat(endEl.value);
-      if (isFinite(v)) { seg.end = v; refreshStatus(); }
+      if (isFinite(v)) {
+        seg.end = v;
+        refreshStatus();
+        linkAdjacent(seg, "end");
+      }
     });
 
     row.querySelector(".ed-play").addEventListener("click", () => {
@@ -1372,11 +1490,13 @@ function renderEditor() {
       seg.start = +video.currentTime.toFixed(2);
       startEl.value = seg.start.toFixed(2);
       refreshStatus();
+      linkAdjacent(seg, "start");
     });
     row.querySelector(".ed-snap-end").addEventListener("click", () => {
       seg.end = +video.currentTime.toFixed(2);
       endEl.value = seg.end.toFixed(2);
       refreshStatus();
+      linkAdjacent(seg, "end");
     });
     row.querySelector(".ed-delete").addEventListener("click", () => {
       editorDraft.splice(idx, 1);
@@ -1510,6 +1630,17 @@ editorSplitBtn.addEventListener("click", splitAtPlayhead);
 
 let libraryCache = [];
 
+/** Combine-mode state: when true, library cards turn into selectable tiles
+    and clicking adds/removes the entry from the ordered selection list. */
+let libraryCombineMode = false;
+let libraryCombineSelection = []; // ordered video_ids
+
+const libraryCombineBtn = document.getElementById("library-combine-btn");
+const libraryCombineBar = document.getElementById("library-combine-bar");
+const libraryCombineConfirm = document.getElementById("library-combine-confirm");
+const libraryCombineCancel = document.getElementById("library-combine-cancel");
+const libraryCombineHint = document.getElementById("library-combine-hint");
+
 function formatRelativeTime(iso) {
   if (!iso) return "";
   const t = new Date(iso).getTime();
@@ -1605,14 +1736,34 @@ function renderLibrary() {
         </button>
       </div>
     `;
-    card.querySelector(".lib-open").addEventListener("click", (e) => {
-      e.stopPropagation();
-      loadLibraryEntry(entry.video_id, { autoStartWorkshop: false });
-    });
-    card.querySelector(".lib-workshop").addEventListener("click", (e) => {
-      e.stopPropagation();
-      loadLibraryEntry(entry.video_id, { autoStartWorkshop: true });
-    });
+    // In combine mode, the whole card toggles selection and the inner
+    // buttons are inert. Otherwise the inner buttons drive the usual flows.
+    if (libraryCombineMode) {
+      const order = libraryCombineSelection.indexOf(entry.video_id);
+      if (order >= 0) {
+        card.classList.add("ring-2", "ring-indigo-500");
+        const badge = document.createElement("div");
+        badge.className =
+          "absolute top-1 left-1 w-6 h-6 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center shadow";
+        badge.textContent = String(order + 1);
+        card.classList.add("relative");
+        card.appendChild(badge);
+      }
+      card.classList.add("cursor-pointer", "select-none");
+      card.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleCombineSelection(entry.video_id);
+      });
+    } else {
+      card.querySelector(".lib-open").addEventListener("click", (e) => {
+        e.stopPropagation();
+        loadLibraryEntry(entry.video_id, { autoStartWorkshop: false });
+      });
+      card.querySelector(".lib-workshop").addEventListener("click", (e) => {
+        e.stopPropagation();
+        loadLibraryEntry(entry.video_id, { autoStartWorkshop: true });
+      });
+    }
     const titleEl = card.querySelector(".lib-title");
     const renameBtn = card.querySelector(".lib-rename");
 
@@ -1714,7 +1865,8 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
     video.src = data.video_url;
     video.load();
-    pendingFile = null;
+    pendingFiles = [];
+    renderUploadFileList();
     currentVideoId = data.video_id;
     currentPermission = data.permission || "owner";
     applyPermissionGating();
@@ -1765,6 +1917,88 @@ libraryBtn.addEventListener("click", async () => {
 libraryCloseBtn.addEventListener("click", () => {
   libraryPanel.classList.add("hidden");
   stopLibraryPoll();
+  if (libraryCombineMode) exitLibraryCombineMode();
+});
+
+/* ---------------------------------------------------------------- */
+/* Library combine mode — select N entries, merge into a new routine */
+/* ---------------------------------------------------------------- */
+
+function enterLibraryCombineMode() {
+  libraryCombineMode = true;
+  libraryCombineSelection = [];
+  libraryCombineBar.classList.remove("hidden");
+  libraryCombineBtn.textContent = "Combining…";
+  libraryCombineBtn.disabled = true;
+  updateLibraryCombineConfirm();
+  renderLibrary();
+}
+
+function exitLibraryCombineMode() {
+  libraryCombineMode = false;
+  libraryCombineSelection = [];
+  libraryCombineBar.classList.add("hidden");
+  libraryCombineBtn.textContent = "Combine…";
+  libraryCombineBtn.disabled = false;
+  renderLibrary();
+}
+
+function toggleCombineSelection(videoId) {
+  const idx = libraryCombineSelection.indexOf(videoId);
+  if (idx >= 0) libraryCombineSelection.splice(idx, 1);
+  else libraryCombineSelection.push(videoId);
+  updateLibraryCombineConfirm();
+  renderLibrary();
+}
+
+function updateLibraryCombineConfirm() {
+  const n = libraryCombineSelection.length;
+  libraryCombineConfirm.disabled = n < 2;
+  libraryCombineConfirm.textContent =
+    n === 0 ? "Combine 0 selected" : `Combine ${n} selected`;
+  libraryCombineHint.textContent =
+    n < 2
+      ? "Click clips in the order you want them combined."
+      : `Will merge in this order: ${libraryCombineSelection
+          .map((id, i) => {
+            const entry = libraryCache.find((e) => e.video_id === id);
+            return `${i + 1}. ${entry ? entry.title : id}`;
+          })
+          .join(" → ")}`;
+}
+
+libraryCombineBtn.addEventListener("click", enterLibraryCombineMode);
+libraryCombineCancel.addEventListener("click", exitLibraryCombineMode);
+
+libraryCombineConfirm.addEventListener("click", async () => {
+  if (libraryCombineSelection.length < 2) return;
+  const selectedIds = [...libraryCombineSelection];
+  libraryCombineConfirm.disabled = true;
+  libraryPanel.classList.add("hidden");
+  exitLibraryCombineMode();
+
+  startProcessingBanner(
+    `Combining ${selectedIds.length} library videos and processing.`
+  );
+  processVideoBtn.disabled = true;
+  try {
+    const res = await fetch("/api/library/combine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_ids: selectedIds }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    applyProcessResponse(data);
+  } catch (err) {
+    console.error(err);
+    showProcessingError(err.message);
+  } finally {
+    updateProcessSubtitle();
+  }
 });
 
 /* ---------------------------------------------------------------- */

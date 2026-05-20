@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
@@ -492,6 +494,137 @@ def _run_file_pipeline(
     )
 
 
+def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
+    """Concatenate N videos into one MP4 using ffmpeg's concat filter.
+
+    Re-encodes to ensure the result is consistent regardless of mixed input
+    codecs, resolutions, or frame rates. Slower than stream-copy but the
+    only reliable option when inputs are heterogeneous.
+
+    Requires every input to have an audio track. If that's a problem we can
+    add silent-audio padding later — for now we fail with a clear error.
+    """
+    if not input_paths:
+        raise ValueError("No input videos to concatenate")
+
+    n = len(input_paths)
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for p in input_paths:
+        cmd.extend(["-i", str(p)])
+
+    # Build the filter: [0:v][0:a][1:v][1:a]…concat=n=N:v=1:a=1[v][a]
+    stream_chain = "".join(f"[{i}:v][{i}:a]" for i in range(n))
+    filter_str = f"{stream_chain}concat=n={n}:v=1:a=1[v][a]"
+
+    cmd.extend(
+        [
+            "-filter_complex", filter_str,
+            "-map", "[v]",
+            "-map", "[a]",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+    )
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        # Trim ffmpeg's verbose output so the error message is readable.
+        msg = (result.stderr or "").strip().splitlines()[-3:]
+        raise RuntimeError(
+            "ffmpeg concat failed — check that every clip has audio. "
+            + " | ".join(msg)
+        )
+
+
+@app.post("/api/process-files", response_model=ProcessResponse)
+async def process_video_files(
+    files: list[UploadFile] = File(...),
+    model_variant: Literal["lite", "full", "heavy"] = Form("full"),
+    sample_every_n_frames: int = Form(1),
+    min_segment_duration: float = Form(4.0),
+    max_segment_duration: float = Form(8.0),
+    low_velocity_percentile: float = Form(15.0),
+    smooth_window: int = Form(5),
+    user: auth.User = Depends(get_current_user),
+) -> ProcessResponse:
+    """Concatenate several uploaded clips into one MP4 and process the result.
+
+    Crop bounds are intentionally NOT accepted here — the user can re-process
+    the resulting library entry with crop bounds afterwards if they want.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+    if len(files) > 8:
+        raise HTTPException(
+            status_code=400,
+            detail="At most 8 clips can be combined at once.",
+        )
+
+    user_dl = user_downloads_dir(user.id)
+    tmp_dir = user_dl / f".tmp-{uuid.uuid4().hex[:8]}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    input_paths: list[Path] = []
+    try:
+        # Stream every upload to a temp file (chunked so large clips don't OOM).
+        for i, file in enumerate(files):
+            suffix = Path(file.filename or f"clip{i}.mp4").suffix or ".mp4"
+            tmp_in = tmp_dir / f"in_{i:02d}{suffix}"
+            with tmp_in.open("wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    f.write(chunk)
+            input_paths.append(tmp_in)
+
+        # Build a stable name for the combined video so the library is happy.
+        first_stem = (
+            "".join(c for c in Path(files[0].filename or "combined").stem
+                    if c.isalnum() or c in "-_")
+            or "combined"
+        )
+        video_id = f"combined-{first_stem[:24]}-{uuid.uuid4().hex[:6]}"
+        dest = user_dl / f"{video_id}.mp4"
+
+        # Re-encode everything into one MP4. Runs in a thread to keep the
+        # event loop free during the ffmpeg call (which can take a while).
+        await asyncio.to_thread(_concat_videos, input_paths, dest)
+
+        # Reuse the existing single-file pipeline on the merged video.
+        original_name = " + ".join(f.filename or "clip" for f in files)
+        return await asyncio.to_thread(
+            _run_file_pipeline,
+            user.id,
+            dest,
+            model_variant,
+            sample_every_n_frames,
+            min_segment_duration,
+            max_segment_duration,
+            low_velocity_percentile,
+            smooth_window,
+            None,
+            None,
+            original_name,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Combine + process failed: {e}")
+    finally:
+        # Best-effort cleanup of temp inputs.
+        for p in input_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            tmp_dir.rmdir()
+        except Exception:
+            pass
+
+
 @app.post("/api/process-file", response_model=ProcessResponse)
 async def process_video_file(
     file: UploadFile = File(...),
@@ -950,6 +1083,87 @@ async def accept_share_invite(
             "permission": invite.permission,
         }
     )
+
+
+class CombineLibraryRequest(BaseModel):
+    video_ids: list[str]
+    model_variant: Literal["lite", "full", "heavy"] = "full"
+
+
+@app.post("/api/library/combine", response_model=ProcessResponse)
+async def combine_library_entries(
+    payload: CombineLibraryRequest,
+    user: auth.User = Depends(get_current_user),
+) -> ProcessResponse:
+    """Concatenate several library entries (in the given order) into a new
+    routine owned by the requesting user.
+
+    Each entry must be one the user can access — either owned or shared with
+    them. We don't disturb the original entries; the combined output is a
+    fresh library entry under the requester's account.
+    """
+    if len(payload.video_ids) < 2:
+        raise HTTPException(
+            status_code=400, detail="Pick at least 2 videos to combine."
+        )
+    if len(payload.video_ids) > 8:
+        raise HTTPException(
+            status_code=400, detail="At most 8 videos can be combined at once."
+        )
+
+    # Resolve each video_id to an absolute MP4 path. Owner's downloads dir is
+    # where the canonical file lives, whether the user owns or is shared on it.
+    titles: list[str] = []
+    source_paths: list[Path] = []
+    for vid in payload.video_ids:
+        owner_id, _perm = resolve_entry_access(user.id, vid)
+        owner_lib = _read_library(owner_id)
+        entry = next((i for i in owner_lib if i.get("video_id") == vid), None)
+        if not entry:
+            raise HTTPException(status_code=404, detail=f"Unknown video: {vid}")
+        filename = entry.get("video_url", "").split("/")[-1]
+        if not filename:
+            raise HTTPException(
+                status_code=500, detail=f"Missing video file for {vid}"
+            )
+        path = user_downloads_dir(owner_id) / filename
+        if not path.is_file():
+            raise HTTPException(
+                status_code=410,
+                detail=f"Video file for '{entry.get('title', vid)}' is no longer on disk.",
+            )
+        source_paths.append(path)
+        titles.append(entry.get("title") or vid)
+
+    user_dl = user_downloads_dir(user.id)
+    video_id = f"combined-{uuid.uuid4().hex[:10]}"
+    dest = user_dl / f"{video_id}.mp4"
+
+    try:
+        await asyncio.to_thread(_concat_videos, source_paths, dest)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Combine failed: {e}")
+
+    # Use a friendly default title; user can rename via the existing ✎.
+    combined_title = " + ".join(titles)[:200]
+
+    try:
+        return await asyncio.to_thread(
+            _run_file_pipeline,
+            user.id,
+            dest,
+            payload.model_variant,
+            1,        # sample_every_n_frames default
+            4.0,      # min_segment_duration default
+            8.0,      # max_segment_duration default
+            15.0,     # low_velocity_percentile default
+            5,        # smooth_window default
+            None,
+            None,
+            combined_title,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
 
 @app.delete("/api/library/{video_id}")

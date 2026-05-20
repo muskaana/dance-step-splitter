@@ -281,15 +281,50 @@
           id="library-panel"
           class="hidden bg-white border border-slate-200 rounded-xl shadow-sm p-3"
         >
-          <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
             <h3 class="text-sm font-semibold text-slate-900">Your processed videos</h3>
-            <button
-              id="library-close-btn"
-              class="text-xs text-slate-500 hover:text-slate-800"
-            >
-              Close
-            </button>
+            <div class="flex items-center gap-2">
+              <button
+                id="library-combine-btn"
+                class="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                Combine…
+              </button>
+              <button
+                id="library-close-btn"
+                class="text-xs text-slate-500 hover:text-slate-800"
+              >
+                Close
+              </button>
+            </div>
           </div>
+
+          <!-- Combine-mode toolbar — shown only while the user is selecting
+               entries to merge into a new routine. -->
+          <div
+            id="library-combine-bar"
+            class="hidden mb-2 p-2 rounded-md bg-indigo-50 border border-indigo-200 flex items-center justify-between flex-wrap gap-2 text-xs"
+          >
+            <p id="library-combine-hint" class="text-indigo-700">
+              Click clips in the order you want them combined.
+            </p>
+            <div class="flex items-center gap-2">
+              <button
+                id="library-combine-cancel"
+                class="px-2 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                id="library-combine-confirm"
+                disabled
+                class="px-3 py-1 rounded-md bg-indigo-600 text-white font-semibold hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed"
+              >
+                Combine 0 selected
+              </button>
+            </div>
+          </div>
+
           <div id="library-list" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
             <p class="col-span-full text-xs text-slate-500 text-center py-6">Loading…</p>
           </div>
@@ -347,11 +382,17 @@
               <span>YouTube throttles cloud-hosted downloads, so the resulting video may come back at lower resolution. For best quality, download the video yourself and use <strong>Upload file</strong> instead.</span>
             </p>
           </div>
-          <div id="source-upload" class="hidden">
-            <label class="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100 text-sm">
-              <span id="upload-label">Choose a video file…</span>
-              <input id="video-file" type="file" accept="video/*" class="hidden" />
-            </label>
+          <div id="source-upload" class="hidden space-y-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <label class="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100 text-sm">
+                <span id="upload-label">Choose one or more video files…</span>
+                <input id="video-file" type="file" accept="video/*" multiple class="hidden" />
+              </label>
+              <p class="text-[11px] text-slate-500">
+                Pick 2+ files to combine them into one routine.
+              </p>
+            </div>
+            <ul id="upload-file-list" class="hidden space-y-1"></ul>
           </div>
 
           <!-- Crop row: always visible. Inputs are inert until a video loads
