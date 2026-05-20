@@ -23,6 +23,10 @@
         background-color: #0f172a;
         color: white;
       }
+      .source-btn.active {
+        background-color: #4f46e5;
+        color: white;
+      }
       .segment-btn.locked {
         opacity: 0.6;
         cursor: not-allowed;
@@ -44,7 +48,202 @@
     </style>
   </head>
   <body class="bg-slate-100 min-h-screen text-slate-800">
-    <div class="max-w-7xl mx-auto p-4 lg:p-8">
+    <!-- Login overlay — shown until /api/auth/me succeeds. -->
+    <div
+      id="auth-overlay"
+      class="fixed inset-0 z-50 bg-slate-900/80 hidden items-center justify-center p-4"
+    >
+      <div class="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
+        <h1 class="text-xl font-bold text-slate-900 mb-1">Dance Step Splitter</h1>
+        <p class="text-sm text-slate-500 mb-4">
+          Sign in to access your library and saved segments.
+        </p>
+
+        <div class="flex gap-1 mb-4 text-xs">
+          <button
+            data-tab="signin"
+            class="auth-tab active flex-1 py-2 rounded-md border border-slate-300"
+          >
+            Sign in
+          </button>
+          <button
+            data-tab="signup"
+            class="auth-tab flex-1 py-2 rounded-md border border-slate-300"
+          >
+            Sign up
+          </button>
+        </div>
+
+        <form id="auth-form" class="space-y-3">
+          <input
+            type="text"
+            id="auth-username"
+            placeholder="Username (3–32 chars, letters/numbers/_-)"
+            required
+            minlength="3"
+            maxlength="32"
+            pattern="[A-Za-z0-9_-]{3,32}"
+            autocomplete="username"
+            class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <input
+            type="password"
+            id="auth-password"
+            placeholder="Password (8+ characters)"
+            required
+            minlength="8"
+            autocomplete="current-password"
+            class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <button
+            type="submit"
+            id="auth-submit"
+            class="w-full py-2 bg-indigo-600 text-white rounded-md text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-400"
+          >
+            Sign in
+          </button>
+          <p id="auth-error" class="text-xs text-rose-600 hidden"></p>
+        </form>
+      </div>
+    </div>
+
+    <style>
+      .auth-tab.active { background: #0f172a; color: white; border-color: #0f172a; }
+    </style>
+
+    <!-- Tutorial overlay — auto-shown for new users, re-openable via header link. -->
+    <div
+      id="tutorial-overlay"
+      class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-slate-900">How it works</h2>
+          <button id="tutorial-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+        </div>
+        <ol class="space-y-4">
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">1</span>
+            <div>
+              <h3 class="font-semibold text-slate-900">Add a video</h3>
+              <p class="text-sm text-slate-600">Paste a YouTube URL and click <em>Process video</em>, or click <em>Upload & process local video</em> to use an MP4 from your computer.</p>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">2</span>
+            <div>
+              <h3 class="font-semibold text-slate-900">Crop the choreography</h3>
+              <p class="text-sm text-slate-600">Skip the intro / outro: scrub to where the dance actually starts, hit <em>Use playhead → Start</em>, and do the same for the end. Then click <em>Process Video</em> in the crop panel.</p>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">3</span>
+            <div>
+              <h3 class="font-semibold text-slate-900">Edit segments</h3>
+              <p class="text-sm text-slate-600">The auto-detected segments appear on the right. Click <em>Edit</em> to tweak start/end times, split at the playhead, add or delete a segment. Save when happy — your edits go to your library.</p>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">4</span>
+            <div>
+              <h3 class="font-semibold text-slate-900">Pick your settings</h3>
+              <p class="text-sm text-slate-600">Below the video: change <em>Speed</em> (slo-mo for tricky moves), toggle <em>Mirror Mode</em> to follow along like a class, and switch <em>On Audio</em> / <em>On Counts</em> to hear a 1–8 count instead of music.</p>
+            </div>
+          </li>
+          <li class="flex gap-3">
+            <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">5</span>
+            <div>
+              <h3 class="font-semibold text-slate-900">Practice</h3>
+              <p class="text-sm text-slate-600">Click individual segment buttons to loop them, combine several to drill a run, or hit <em>Start Workshop</em> for a guided chunking-and-chaining session: drill 1, drill 2, combine 1+2, drill 3, combine 1+2+3, and so on.</p>
+            </div>
+          </li>
+        </ol>
+        <button
+          id="tutorial-dismiss"
+          class="mt-6 w-full py-2 rounded-md bg-indigo-600 text-white font-semibold hover:bg-indigo-700"
+        >
+          Got it
+        </button>
+      </div>
+    </div>
+
+    <!-- Share modal — owner-only management of who can view/edit a library entry. -->
+    <div
+      id="share-modal"
+      class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-bold text-slate-900">Share video</h2>
+          <button id="share-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+        </div>
+        <p id="share-subtitle" class="text-sm text-slate-500 mb-4">—</p>
+
+        <!-- Permission applies to both forms below. -->
+        <div class="flex items-center gap-3 text-sm mb-3">
+          <span class="text-slate-500">Access:</span>
+          <label class="flex items-center gap-1.5">
+            <input type="radio" name="share-perm" value="view" checked /> View only
+          </label>
+          <label class="flex items-center gap-1.5">
+            <input type="radio" name="share-perm" value="edit" /> Edit / collaborate
+          </label>
+        </div>
+
+        <!-- Share by username -->
+        <form id="share-form" class="space-y-2 mb-3">
+          <div class="flex items-center gap-2">
+            <input
+              type="text"
+              id="share-username"
+              placeholder="Recipient's username"
+              required
+              minlength="3"
+              maxlength="32"
+              pattern="[A-Za-z0-9_-]{3,32}"
+              class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm"
+            />
+            <button
+              type="submit"
+              class="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 whitespace-nowrap"
+            >
+              Share
+            </button>
+          </div>
+          <p id="share-error" class="text-xs text-rose-600 hidden"></p>
+        </form>
+
+        <!-- Or by link -->
+        <div class="mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200">
+          <div class="flex items-center justify-between mb-1.5">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Share link</h3>
+            <button
+              type="button"
+              id="share-link-create"
+              class="text-xs px-2 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100"
+            >
+              Generate link
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-500 mb-1.5">
+            Anyone with the link can claim access by signing in or signing up.
+          </p>
+          <div id="share-links-list" class="space-y-1.5">
+            <p class="text-xs text-slate-400 text-center py-1">No active links.</p>
+          </div>
+        </div>
+
+        <!-- Existing direct shares -->
+        <div>
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Shared with</h3>
+          <div id="share-list" class="space-y-1.5 max-h-40 overflow-y-auto">
+            <p class="text-xs text-slate-400 text-center py-2">Not shared with anyone yet.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="app-root" class="max-w-7xl mx-auto p-4 lg:p-8">
       <header class="mb-6 space-y-4">
         <div class="flex items-center justify-between flex-wrap gap-3">
           <div>
@@ -53,7 +252,21 @@
               Click segments to loop them. Combine multiple to practice a run.
             </p>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
+            <button id="tutorial-btn" class="text-xs text-indigo-600 hover:text-indigo-800 hover:underline">
+              How it works
+            </button>
+            <span id="user-badge" class="hidden items-center gap-2 text-xs text-slate-500">
+              <span id="user-name"
+                    class="font-medium text-slate-700 outline-none"
+                    contenteditable="false"
+                    title="Click ✎ to change"></span>
+              <button id="rename-user-btn" class="text-slate-400 hover:text-indigo-600" title="Change username">✎</button>
+              <span id="user-rename-error" class="hidden text-rose-600"></span>
+              <button id="logout-btn" class="text-indigo-600 hover:text-indigo-800 hover:underline">
+                Sign out
+              </button>
+            </span>
             <button
               id="library-btn"
               type="button"
@@ -61,12 +274,6 @@
             >
               Library <span id="library-count" class="text-xs text-slate-500 ml-1"></span>
             </button>
-            <label
-              class="text-sm bg-white border border-slate-300 px-3 py-2 rounded-lg cursor-pointer hover:bg-slate-50"
-            >
-              Upload & process local video
-              <input id="video-file" type="file" accept="video/*" class="hidden" />
-            </label>
           </div>
         </div>
 
@@ -88,38 +295,183 @@
           </div>
         </section>
 
-        <form
-          id="youtube-form"
-          class="bg-white border border-slate-200 rounded-xl shadow-sm p-3 flex flex-wrap items-center gap-2"
+        <!-- Step 1: choose a video. Crop sliders unlock once a video is loaded.
+             The body is collapsible — auto-collapses after a successful process
+             so the player can take the spotlight. -->
+        <section
+          id="add-video-card"
+          class="bg-white border border-slate-200 rounded-xl shadow-sm p-4"
         >
-          <input
-            id="youtube-url"
-            type="url"
-            required
-            placeholder="Paste a YouTube URL — e.g. https://www.youtube.com/watch?v=…"
-            class="flex-1 min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
-          <select
-            id="youtube-quality"
-            class="px-3 py-2 rounded-md border border-slate-300 text-sm bg-white"
-          >
-            <option value="720p">720p</option>
-            <option value="480p">480p</option>
-          </select>
-          <button
-            id="process-btn"
-            type="submit"
-            class="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed"
-          >
-            Process video
-          </button>
-          <span id="process-status" class="text-xs text-slate-500 w-full sm:w-auto"></span>
-        </form>
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <div class="min-w-0">
+              <h2 class="text-sm font-semibold text-slate-900">Add a video</h2>
+              <p id="add-video-tagline" class="text-xs text-slate-500">
+                Paste a YouTube link or upload a file, optionally crop, then process.
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <div id="source-toggle" class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs">
+                <button data-source="youtube" class="source-btn active px-3 py-1.5 hover:bg-slate-100">YouTube URL</button>
+                <button data-source="upload" class="source-btn px-3 py-1.5 hover:bg-slate-100 border-l border-slate-300">Upload file</button>
+              </div>
+              <button
+                id="add-video-collapse-btn"
+                type="button"
+                class="w-7 h-7 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-100 text-sm leading-none"
+                title="Collapse"
+              >−</button>
+            </div>
+          </div>
+          <div id="add-video-body" class="space-y-3 mt-3">
+
+          <!-- Source row: shows either URL+quality or file picker -->
+          <div id="source-youtube" class="flex flex-wrap items-center gap-2">
+            <input
+              id="youtube-url"
+              type="url"
+              placeholder="https://www.youtube.com/watch?v=…"
+              class="flex-1 min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <select
+              id="youtube-quality"
+              class="px-3 py-2 rounded-md border border-slate-300 text-sm bg-white"
+            >
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </div>
+          <div id="source-upload" class="hidden">
+            <label class="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100 text-sm">
+              <span id="upload-label">Choose a video file…</span>
+              <input id="video-file" type="file" accept="video/*" class="hidden" />
+            </label>
+          </div>
+
+          <!-- Crop row: always visible. Inputs are inert until a video loads
+               (YouTube URLs can be cropped on the second pass; locally-picked
+                files unlock cropping immediately on preview). -->
+          <div id="crop-row" class="border-t border-slate-200 pt-3 space-y-2">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Crop (optional)</h3>
+              <span id="crop-duration" class="text-xs text-slate-500 font-mono">Full video</span>
+            </div>
+            <p id="crop-hint" class="text-[11px] text-slate-500">
+              Pick a local file to crop before processing, or process a YouTube URL once and re-process with crop bounds.
+            </p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label class="block text-sm">
+                <span class="text-slate-600 text-xs">Start (s)</span>
+                <div class="flex items-center gap-2 mt-1">
+                  <input
+                    id="crop-start"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="w-20 px-2 py-1 rounded-md border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <input
+                    id="crop-start-range"
+                    type="range"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="flex-1 accent-indigo-600"
+                  />
+                </div>
+              </label>
+              <label class="block text-sm">
+                <span class="text-slate-600 text-xs">End (s)</span>
+                <div class="flex items-center gap-2 mt-1">
+                  <input
+                    id="crop-end"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="w-20 px-2 py-1 rounded-md border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <input
+                    id="crop-end-range"
+                    type="range"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="flex-1 accent-indigo-600"
+                  />
+                </div>
+              </label>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button
+                id="crop-preview-start-btn"
+                type="button"
+                class="px-2 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Use playhead → Start
+              </button>
+              <button
+                id="crop-preview-end-btn"
+                type="button"
+                class="px-2 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Use playhead → End
+              </button>
+              <button
+                id="crop-reset-btn"
+                type="button"
+                class="px-2 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+
+          <!-- Action row -->
+          <div class="flex items-center gap-3 flex-wrap border-t border-slate-200 pt-3">
+            <button
+              id="process-video-btn"
+              type="button"
+              class="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed"
+            >
+              Process Video
+            </button>
+            <p id="process-subtitle" class="text-xs text-slate-500">Add a video to enable.</p>
+          </div>
+          </div><!-- /#add-video-body -->
+        </section>
+
+        <!-- Sticky processing banner — shown only while a request is in flight. -->
+        <div
+          id="process-banner"
+          class="hidden bg-indigo-600 text-white rounded-xl shadow-lg p-3 flex items-center gap-3"
+        >
+          <div id="process-banner-spinner" class="w-5 h-5 rounded-full border-2 border-white/30 border-t-white animate-spin"></div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span id="process-banner-title" class="font-semibold text-sm">Processing video…</span>
+              <span id="process-banner-phase" class="text-xs bg-white/15 px-2 py-0.5 rounded">Downloading</span>
+            </div>
+            <p id="process-banner-detail" class="text-[11px] text-indigo-100 mt-0.5">
+              This usually takes a few minutes. You can keep this tab open.
+            </p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span id="process-banner-time" class="font-mono text-sm tabular-nums">0:00</span>
+            <button
+              id="process-banner-close"
+              class="hidden text-white/80 hover:text-white text-xl leading-none"
+              title="Dismiss"
+            >×</button>
+          </div>
+        </div>
       </header>
 
-      <main class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <!-- Main layout: theatre-mode width by default; JS adjusts the right
+           sidebar width based on how many segments there are. -->
+      <main id="main-layout" class="grid grid-cols-1 gap-6 lg:[grid-template-columns:minmax(0,1fr)_280px]">
         <!-- LEFT: video + controls -->
-        <section class="lg:col-span-3 space-y-4">
+        <section class="space-y-4 min-w-0">
           <!-- Workshop Mode banner -->
           <div
             id="workshop-banner"
@@ -158,13 +510,51 @@
             </div>
           </div>
 
-          <div class="bg-black rounded-xl overflow-hidden shadow-lg aspect-video">
+          <div class="bg-black rounded-xl overflow-hidden shadow-lg aspect-video relative">
+            <!-- Quick segment picker — overlays the top-right corner so you
+                 can jump between segments while watching without scrolling
+                 to the sidebar. Single-select for fast switching; the
+                 sidebar still handles multi-select for combining. -->
+            <div id="quick-segments" class="absolute top-3 right-3 z-10 hidden">
+              <button
+                id="quick-segments-btn"
+                type="button"
+                class="bg-black/65 backdrop-blur text-white text-xs font-medium px-3 py-1.5 rounded-md hover:bg-black/85 flex items-center gap-1.5 shadow"
+              >
+                <span id="quick-segments-label" class="truncate max-w-[160px]">Pick segment</span>
+                <span class="text-[10px]">▼</span>
+              </button>
+              <div
+                id="quick-segments-menu"
+                class="hidden mt-1 bg-white shadow-xl rounded-md border border-slate-200 min-w-[180px] max-h-72 overflow-y-auto"
+              ></div>
+            </div>
+
             <video
               id="player"
-              class="w-full h-full object-contain transition-transform duration-200"
+              class="w-full h-full object-contain transition-transform duration-200 hidden"
               controls
               playsinline
             ></video>
+            <div
+              id="empty-state"
+              class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-900 text-slate-300"
+            >
+              <div class="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4">
+                <svg viewBox="0 0 24 24" fill="currentColor" class="w-8 h-8 text-indigo-400">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+              </div>
+              <h3 class="text-lg font-semibold text-white mb-1">Get started</h3>
+              <p class="text-sm max-w-xs">
+                Paste a YouTube link or upload a video above, then click
+                <span class="text-indigo-300 font-medium">Process Video</span>.
+              </p>
+              <p class="text-xs text-slate-400 mt-3">
+                Or open one from your
+                <button id="empty-state-library-link" class="text-indigo-300 hover:underline">library</button>.
+              </p>
+            </div>
           </div>
 
           <div class="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-4">
@@ -211,90 +601,6 @@
             </button>
           </div>
 
-          <div class="bg-white rounded-xl shadow-sm p-4 space-y-3">
-            <div class="flex items-center justify-between flex-wrap gap-2">
-              <h3 class="font-semibold text-slate-900 text-sm">Crop choreography</h3>
-              <span id="crop-duration" class="text-xs text-slate-500 font-mono">—</span>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <label class="block text-sm">
-                <span class="text-slate-600">Dance Start Time (s)</span>
-                <div class="flex items-center gap-2 mt-1">
-                  <input
-                    id="crop-start"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    value="0"
-                    class="w-24 px-2 py-1 rounded-md border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <input
-                    id="crop-start-range"
-                    type="range"
-                    step="0.1"
-                    min="0"
-                    value="0"
-                    class="flex-1 accent-indigo-600"
-                  />
-                </div>
-              </label>
-
-              <label class="block text-sm">
-                <span class="text-slate-600">Dance End Time (s)</span>
-                <div class="flex items-center gap-2 mt-1">
-                  <input
-                    id="crop-end"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    value="0"
-                    class="w-24 px-2 py-1 rounded-md border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <input
-                    id="crop-end-range"
-                    type="range"
-                    step="0.1"
-                    min="0"
-                    value="0"
-                    class="flex-1 accent-indigo-600"
-                  />
-                </div>
-              </label>
-            </div>
-
-            <div class="flex items-center gap-2 flex-wrap pt-1">
-              <button
-                id="crop-preview-start-btn"
-                type="button"
-                class="px-3 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
-              >
-                Use playhead → Start
-              </button>
-              <button
-                id="crop-preview-end-btn"
-                type="button"
-                class="px-3 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
-              >
-                Use playhead → End
-              </button>
-              <button
-                id="crop-reset-btn"
-                type="button"
-                class="px-3 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
-              >
-                Reset crop
-              </button>
-              <button
-                id="crop-process-btn"
-                type="button"
-                class="ml-auto px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed"
-              >
-                Process Video
-              </button>
-            </div>
-          </div>
-
           <div class="bg-white rounded-xl shadow-sm p-4 text-sm text-slate-600">
             <div class="flex justify-between items-center">
               <span>
@@ -313,7 +619,7 @@
         </section>
 
         <!-- RIGHT: segment grid + editor -->
-        <aside class="lg:col-span-2">
+        <aside class="min-w-0">
           <div class="bg-white rounded-xl shadow-sm p-4 h-full">
             <div class="flex items-center justify-between mb-3">
               <h2 class="font-semibold text-slate-900">Segments</h2>
@@ -330,9 +636,9 @@
 
             <div
               id="segment-grid"
-              class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[70vh] overflow-y-auto pr-1"
+              class="flex flex-col gap-1.5 max-h-[70vh] overflow-y-auto pr-1"
             >
-              <p class="col-span-full text-sm text-slate-500 text-center py-8">
+              <p class="text-sm text-slate-500 text-center py-8">
                 Loading segments…
               </p>
             </div>

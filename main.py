@@ -15,13 +15,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    Cookie,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, HttpUrl
 
-from backend import downloader, pose_extractor, segmenter, sequence_builder
+from backend import auth, downloader, pose_extractor, segmenter, sequence_builder, tuner
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -38,23 +48,85 @@ for d in (DATA_DIR, DOWNLOADS_DIR):
     # (Fly.io mounts an empty volume over the build-time target).
     d.resolve().mkdir(parents=True, exist_ok=True)
 
-LIBRARY_PATH = DATA_DIR / "library.json"
+auth.init_auth(DATA_DIR / "users.db")
 
 
-def _read_library() -> list[dict]:
-    if not LIBRARY_PATH.exists():
+# ---------------------------------------------------------------------------
+# Per-user storage layout
+# ---------------------------------------------------------------------------
+
+
+def user_data_dir(user_id: int) -> Path:
+    p = DATA_DIR / "users" / str(user_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def user_downloads_dir(user_id: int) -> Path:
+    p = DOWNLOADS_DIR / "users" / str(user_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def user_library_path(user_id: int) -> Path:
+    return user_data_dir(user_id) / "library.json"
+
+
+def _read_library(user_id: int) -> list[dict]:
+    path = user_library_path(user_id)
+    if not path.exists():
         return []
     try:
-        return json.loads(LIBRARY_PATH.read_text())
+        return json.loads(path.read_text())
     except json.JSONDecodeError:
         return []
 
 
-def _write_library(items: list[dict]) -> None:
-    LIBRARY_PATH.write_text(json.dumps(items, indent=2))
+# ---------------------------------------------------------------------------
+# Pose-data persistence (used by the personalised tuner)
+# ---------------------------------------------------------------------------
+
+
+def _pose_path(user_id: int, video_id: str) -> Path:
+    return user_data_dir(user_id) / f"{video_id}.pose.csv.gz"
+
+
+def _pose_meta_path(user_id: int, video_id: str) -> Path:
+    return user_data_dir(user_id) / f"{video_id}.pose.meta.json"
+
+
+def _save_pose_data(user_id: int, video_id: str, pose_df: "pd.DataFrame") -> None:
+    """Persist the MediaPipe pose DataFrame so the tuner can re-segment it
+    later. Cheap: gzipped CSV ~1-2 MB per video."""
+    pose_df.to_csv(_pose_path(user_id, video_id), index=False, compression="gzip")
+    fps = float(pose_df.attrs.get("fps", 30.0))
+    _pose_meta_path(user_id, video_id).write_text(json.dumps({"fps": fps}))
+
+
+def _load_pose_data(user_id: int, video_id: str):
+    """Load a persisted pose DataFrame, restoring fps via the sidecar meta.
+    Returns None if either the data or meta file is missing."""
+    import pandas as pd
+
+    pose_path = _pose_path(user_id, video_id)
+    meta_path = _pose_meta_path(user_id, video_id)
+    if not pose_path.exists() or not meta_path.exists():
+        return None
+    try:
+        df = pd.read_csv(pose_path)
+        meta = json.loads(meta_path.read_text())
+        df.attrs["fps"] = float(meta.get("fps", 30.0))
+        return df
+    except Exception:
+        return None
+
+
+def _write_library(user_id: int, items: list[dict]) -> None:
+    user_library_path(user_id).write_text(json.dumps(items, indent=2))
 
 
 def _record_library_entry(
+    user_id: int,
     video_id: str,
     video_url: str,
     title: str,
@@ -66,7 +138,7 @@ def _record_library_entry(
     crop_end: Optional[float] = None,
 ) -> dict:
     """Upsert a library entry. Most-recent processing of a given video_id wins."""
-    items = _read_library()
+    items = _read_library(user_id)
     items = [i for i in items if i.get("video_id") != video_id]
     now = datetime.now(timezone.utc).isoformat()
     entry = {
@@ -77,26 +149,67 @@ def _record_library_entry(
         "source_url": source_url,
         "duration": duration,
         "segment_count": segment_count,
-        "segments_file": f"/data/{video_id}.json",
         "processed_at": now,
         "last_edited_at": None,
         "crop_start": crop_start,
         "crop_end": crop_end,
     }
     items.insert(0, entry)
-    _write_library(items)
+    _write_library(user_id, items)
     return entry
 
 
-def _update_library_entry(video_id: str, patch: dict) -> Optional[dict]:
+def _update_library_entry(user_id: int, video_id: str, patch: dict) -> Optional[dict]:
     """Merge `patch` into the library entry with the given `video_id`."""
-    items = _read_library()
+    items = _read_library(user_id)
     for i, item in enumerate(items):
         if item.get("video_id") == video_id:
             items[i] = {**item, **patch}
-            _write_library(items)
+            _write_library(user_id, items)
             return items[i]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+
+def get_current_user(session: Optional[str] = Cookie(default=None)) -> auth.User:
+    user = auth.user_from_session(session)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def resolve_entry_access(
+    user_id: int, video_id: str
+) -> tuple[int, str]:
+    """Determine which owner's files back `video_id` for the requesting user
+    and what permission level they have on it.
+
+    Returns:
+        (owner_user_id, permission) where permission ∈ {"owner", "edit", "view"}.
+
+    Raises HTTPException 404 if the user has no access at all.
+    """
+    if any(i.get("video_id") == video_id for i in _read_library(user_id)):
+        return user_id, "owner"
+    share = auth.find_any_share_for_video(video_id, user_id)
+    if share:
+        return share.owner_id, share.permission
+    raise HTTPException(status_code=404, detail=f"Unknown video_id: {video_id}")
+
+
+def _normalize_video_url(entry: dict, owner_id: int) -> dict:
+    """Rewrite legacy `/videos/<filename>` URLs to the per-owner format.
+    Stored values may use the older format; the API always emits the new one."""
+    url = entry.get("video_url", "")
+    if url.startswith("/videos/"):
+        parts = [p for p in url.split("/") if p]
+        if len(parts) == 2:  # videos/<filename> — legacy
+            return {**entry, "video_url": f"/videos/{owner_id}/{parts[1]}"}
+    return entry
 
 # ---------------------------------------------------------------------------
 # App
@@ -126,12 +239,50 @@ class ProcessRequest(BaseModel):
     end_time: Optional[float] = Field(default=None, gt=0)
 
 
+class TuningInfo(BaseModel):
+    example_count: int
+    params: dict
+
+
 class ProcessResponse(BaseModel):
     video_id: str
     video_url: str
     duration: float
     segment_count: int
     segments: list[dict]
+    tuning: Optional[TuningInfo] = None
+
+
+def _load_tuning_examples(
+    user_id: int, max_examples: int = 5
+) -> list[tuner.TuningExample]:
+    """Find the user's most-recently-edited library entries with persisted pose
+    data and return them as training examples for the tuner."""
+    items = [i for i in _read_library(user_id) if i.get("last_edited_at")]
+    items.sort(key=lambda i: i.get("last_edited_at", ""), reverse=True)
+
+    examples: list[tuner.TuningExample] = []
+    user_data = user_data_dir(user_id)
+    for entry in items:
+        if len(examples) >= max_examples:
+            break
+        video_id = entry.get("video_id")
+        if not video_id:
+            continue
+        seg_path = user_data / f"{video_id}.json"
+        pose_df = _load_pose_data(user_id, video_id)
+        if pose_df is None or not seg_path.exists():
+            continue
+        try:
+            ground_truth = json.loads(seg_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if not ground_truth:
+            continue
+        examples.append(
+            tuner.TuningExample(pose_df=pose_df, ground_truth=ground_truth)
+        )
+    return examples
 
 
 # ---------------------------------------------------------------------------
@@ -139,19 +290,22 @@ class ProcessResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _run_pipeline(req: ProcessRequest) -> ProcessResponse:
+def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
     """Synchronous pipeline. Runs in a threadpool — see /api/process."""
+    user_dl = user_downloads_dir(user_id)
+    user_data = user_data_dir(user_id)
+
     # 1. Download
     video_path, info = downloader.download_video(
         str(req.url),
-        output_dir=DOWNLOADS_DIR,
+        output_dir=user_dl,
         quality=req.quality,
         cookies_from_browser=req.cookies_from_browser,
     )
     video_id = video_path.stem
     title = (info.get("title") or video_id) if isinstance(info, dict) else video_id
 
-    # 2. Extract pose landmarks (optionally cropped)
+    # 2. Extract pose landmarks (optionally cropped) and persist for the tuner.
     pose_df = pose_extractor.extract_pose_landmarks(
         video_path,
         model_variant=req.model_variant,
@@ -159,32 +313,39 @@ def _run_pipeline(req: ProcessRequest) -> ProcessResponse:
         start_time=req.start_time,
         end_time=req.end_time,
     )
+    _save_pose_data(user_id, video_id, pose_df)
 
-    # 3. Segment — dynamic kinematic thresholding, scoped to the crop window
+    # 3. Tune segmenter params against the user's past manual edits, then
+    #    segment with the chosen params. Defaults apply if there's no history.
+    seg_params = {
+        "smooth_window": req.smooth_window,
+        "low_velocity_percentile": req.low_velocity_percentile,
+        "min_segment_duration": req.min_segment_duration,
+        "max_segment_duration": req.max_segment_duration,
+    }
+    tuning_result = tuner.tune(_load_tuning_examples(user_id))
+    if tuning_result is not None:
+        seg_params = {**seg_params, **tuning_result.params}
     segments = segmenter.segment_steps(
         pose_df,
         crop_start=req.start_time,
         crop_end=req.end_time,
-        smooth_window=req.smooth_window,
-        low_velocity_percentile=req.low_velocity_percentile,
-        min_segment_duration=req.min_segment_duration,
-        max_segment_duration=req.max_segment_duration,
+        **seg_params,
     )
 
-    # 4. Build clean sequence + persist to data/sequence.json
+    # 4. Build clean sequence + persist to the user's data folder
     sequence, _ = sequence_builder.build_and_save(
-        segments, filename="sequence.json", data_dir=DATA_DIR
+        segments, filename="sequence.json", data_dir=user_data
     )
-
-    # Also write a per-video copy for archival.
     sequence_builder.save_sequence(
-        sequence, filename=f"{video_id}.json", data_dir=DATA_DIR
+        sequence, filename=f"{video_id}.json", data_dir=user_data
     )
 
     duration = float(pose_df["timestamp"].max()) if not pose_df.empty else 0.0
-    video_url = f"/videos/{video_path.name}"
+    video_url = f"/videos/{user_id}/{video_path.name}"
 
     _record_library_entry(
+        user_id=user_id,
         video_id=video_id,
         video_url=video_url,
         title=title,
@@ -202,6 +363,14 @@ def _run_pipeline(req: ProcessRequest) -> ProcessResponse:
         duration=duration,
         segment_count=len(sequence),
         segments=sequence,
+        tuning=(
+            TuningInfo(
+                example_count=tuning_result.example_count,
+                params=tuning_result.params,
+            )
+            if tuning_result is not None
+            else None
+        ),
     )
 
 
@@ -211,10 +380,13 @@ def _run_pipeline(req: ProcessRequest) -> ProcessResponse:
 
 
 @app.post("/api/process", response_model=ProcessResponse)
-async def process_video(req: ProcessRequest) -> ProcessResponse:
+async def process_video(
+    req: ProcessRequest,
+    user: auth.User = Depends(get_current_user),
+) -> ProcessResponse:
     """Run the full pipeline and return the segment JSON for the UI."""
     try:
-        return await asyncio.to_thread(_run_pipeline, req)
+        return await asyncio.to_thread(_run_pipeline, req, user.id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -222,6 +394,7 @@ async def process_video(req: ProcessRequest) -> ProcessResponse:
 
 
 def _run_file_pipeline(
+    user_id: int,
     video_path: Path,
     model_variant: str,
     sample_every_n_frames: int,
@@ -234,6 +407,7 @@ def _run_file_pipeline(
     original_filename: Optional[str] = None,
 ) -> ProcessResponse:
     """Same as `_run_pipeline` but skipping the download step."""
+    user_data = user_data_dir(user_id)
     video_id = video_path.stem
     title = (
         Path(original_filename).stem if original_filename else video_id
@@ -246,26 +420,35 @@ def _run_file_pipeline(
         start_time=start_time,
         end_time=end_time,
     )
+    _save_pose_data(user_id, video_id, pose_df)
+
+    seg_params = {
+        "smooth_window": smooth_window,
+        "low_velocity_percentile": low_velocity_percentile,
+        "min_segment_duration": min_segment_duration,
+        "max_segment_duration": max_segment_duration,
+    }
+    tuning_result = tuner.tune(_load_tuning_examples(user_id))
+    if tuning_result is not None:
+        seg_params = {**seg_params, **tuning_result.params}
     segments = segmenter.segment_steps(
         pose_df,
         crop_start=start_time,
         crop_end=end_time,
-        smooth_window=smooth_window,
-        low_velocity_percentile=low_velocity_percentile,
-        min_segment_duration=min_segment_duration,
-        max_segment_duration=max_segment_duration,
+        **seg_params,
     )
     sequence, _ = sequence_builder.build_and_save(
-        segments, filename="sequence.json", data_dir=DATA_DIR
+        segments, filename="sequence.json", data_dir=user_data
     )
     sequence_builder.save_sequence(
-        sequence, filename=f"{video_id}.json", data_dir=DATA_DIR
+        sequence, filename=f"{video_id}.json", data_dir=user_data
     )
 
     duration = float(pose_df["timestamp"].max()) if not pose_df.empty else 0.0
-    video_url = f"/videos/{video_path.name}"
+    video_url = f"/videos/{user_id}/{video_path.name}"
 
     _record_library_entry(
+        user_id=user_id,
         video_id=video_id,
         video_url=video_url,
         title=title,
@@ -282,6 +465,14 @@ def _run_file_pipeline(
         duration=duration,
         segment_count=len(sequence),
         segments=sequence,
+        tuning=(
+            TuningInfo(
+                example_count=tuning_result.example_count,
+                params=tuning_result.params,
+            )
+            if tuning_result is not None
+            else None
+        ),
     )
 
 
@@ -296,12 +487,12 @@ async def process_video_file(
     smooth_window: int = Form(5),
     start_time: Optional[float] = Form(None),
     end_time: Optional[float] = Form(None),
+    user: auth.User = Depends(get_current_user),
 ) -> ProcessResponse:
     """Run the pose / segment / sequence pipeline on a user-uploaded video."""
     suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
-    # Use the original basename (sanitized) so /videos/<name> stays predictable.
     safe_stem = "".join(c for c in Path(file.filename or "video").stem if c.isalnum() or c in "-_") or "video"
-    dest = DOWNLOADS_DIR / f"{safe_stem}{suffix}"
+    dest = user_downloads_dir(user.id) / f"{safe_stem}{suffix}"
 
     # Stream the upload to disk in chunks so big files don't blow up memory.
     with dest.open("wb") as f:
@@ -311,6 +502,7 @@ async def process_video_file(
     try:
         return await asyncio.to_thread(
             _run_file_pipeline,
+            user.id,
             dest,
             model_variant,
             sample_every_n_frames,
@@ -327,9 +519,11 @@ async def process_video_file(
 
 
 @app.get("/api/sequence")
-async def get_current_sequence() -> JSONResponse:
-    """Return the most recently generated sequence, if any."""
-    path = DATA_DIR / "sequence.json"
+async def get_current_sequence(
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Return the most recently generated sequence for the current user."""
+    path = user_data_dir(user.id) / "sequence.json"
     if not path.exists():
         return JSONResponse([])
     with path.open() as f:
@@ -344,7 +538,10 @@ class SegmentItem(BaseModel):
 
 
 @app.put("/api/sequence")
-async def update_sequence(segments: list[SegmentItem]) -> JSONResponse:
+async def update_sequence(
+    segments: list[SegmentItem],
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
     """Persist a user-edited segment list, sorted by start time and re-numbered."""
     sorted_segs = sorted(segments, key=lambda s: s.start)
     out = []
@@ -362,9 +559,7 @@ async def update_sequence(segments: list[SegmentItem]) -> JSONResponse:
                 "end": round(s.end, 2),
             }
         )
-    path = DATA_DIR / "sequence.json"
-    with path.open("w") as f:
-        json.dump(out, f, indent=2)
+    (user_data_dir(user.id) / "sequence.json").write_text(json.dumps(out, indent=2))
     return JSONResponse(out)
 
 
@@ -374,25 +569,62 @@ async def health() -> dict:
 
 
 @app.get("/api/library")
-async def list_library() -> JSONResponse:
-    """List all previously processed videos (most-recent first)."""
-    return JSONResponse(_read_library())
+async def list_library(
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """List all previously processed videos — both owned and shared with me."""
+    out: list[dict] = []
+
+    # Owned entries.
+    for entry in _read_library(user.id):
+        out.append(
+            {
+                **_normalize_video_url(entry, user.id),
+                "permission": "owner",
+                "owner_id": user.id,
+            }
+        )
+
+    # Entries shared with this user.
+    for share in auth.shares_for_recipient(user.id):
+        owner_entries = _read_library(share.owner_id)
+        owner_entry = next(
+            (i for i in owner_entries if i.get("video_id") == share.video_id),
+            None,
+        )
+        if not owner_entry:
+            continue  # Share points at a deleted entry — skip silently.
+        owner = auth.get_user(share.owner_id)
+        out.append(
+            {
+                **_normalize_video_url(owner_entry, share.owner_id),
+                "permission": share.permission,
+                "owner_id": share.owner_id,
+                "shared_by_username": owner.username if owner else None,
+            }
+        )
+
+    return JSONResponse(out)
 
 
 @app.get("/api/library/{video_id}")
-async def load_library_entry(video_id: str) -> JSONResponse:
-    """Load a previously processed video's segments + metadata.
+async def load_library_entry(
+    video_id: str,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Load a video the user owns OR has been granted view/edit access to."""
+    owner_id, permission = resolve_entry_access(user.id, video_id)
+    owner_data = user_data_dir(owner_id)
+    owner_dl = user_downloads_dir(owner_id)
 
-    Also rewrites `data/sequence.json` so the next page reload still sees the
-    most recently opened sequence.
-    """
     entry = next(
-        (i for i in _read_library() if i.get("video_id") == video_id), None
+        (i for i in _read_library(owner_id) if i.get("video_id") == video_id),
+        None,
     )
     if not entry:
         raise HTTPException(status_code=404, detail=f"Unknown video_id: {video_id}")
 
-    seg_path = DATA_DIR / f"{video_id}.json"
+    seg_path = owner_data / f"{video_id}.json"
     if not seg_path.exists():
         raise HTTPException(
             status_code=404, detail=f"Segments file missing for {video_id}"
@@ -400,12 +632,22 @@ async def load_library_entry(video_id: str) -> JSONResponse:
     segments = json.loads(seg_path.read_text())
 
     video_filename = entry.get("video_url", "").split("/")[-1]
-    video_exists = (DOWNLOADS_DIR / video_filename).exists() if video_filename else False
+    video_exists = (owner_dl / video_filename).exists() if video_filename else False
 
-    # Mirror the loaded sequence into sequence.json for the next page reload.
-    (DATA_DIR / "sequence.json").write_text(json.dumps(segments, indent=2))
+    # Mirror to the requesting user's own sequence file so /api/sequence works.
+    user_data_dir(user.id).joinpath("sequence.json").write_text(
+        json.dumps(segments, indent=2)
+    )
 
-    return JSONResponse({**entry, "segments": segments, "video_exists": video_exists})
+    return JSONResponse(
+        {
+            **_normalize_video_url(entry, owner_id),
+            "segments": segments,
+            "video_exists": video_exists,
+            "permission": permission,
+            "owner_id": owner_id,
+        }
+    )
 
 
 class LibraryUpdate(BaseModel):
@@ -415,14 +657,19 @@ class LibraryUpdate(BaseModel):
 
 
 @app.put("/api/library/{video_id}")
-async def update_library_entry(video_id: str, payload: LibraryUpdate) -> JSONResponse:
-    """Save manual edits to a library entry's segments and/or crop bounds."""
-    if not _read_library() or all(
-        i.get("video_id") != video_id for i in _read_library()
-    ):
-        raise HTTPException(status_code=404, detail=f"Unknown video_id: {video_id}")
+async def update_library_entry(
+    video_id: str,
+    payload: LibraryUpdate,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Save manual edits — allowed for owner or anyone with 'edit' permission."""
+    owner_id, permission = resolve_entry_access(user.id, video_id)
+    if permission == "view":
+        raise HTTPException(
+            status_code=403,
+            detail="You have view-only access to this video. Ask the owner for edit access.",
+        )
 
-    # Reuse the same canonicalization (sort by start, renumber ids) as PUT /api/sequence.
     sorted_segs = sorted(payload.segments, key=lambda s: s.start)
     out = []
     for i, s in enumerate(sorted_segs, start=1):
@@ -440,11 +687,16 @@ async def update_library_entry(video_id: str, payload: LibraryUpdate) -> JSONRes
             }
         )
 
-    # Persist to both the per-video archive and the working sequence file.
-    (DATA_DIR / f"{video_id}.json").write_text(json.dumps(out, indent=2))
-    (DATA_DIR / "sequence.json").write_text(json.dumps(out, indent=2))
+    # Persist edits onto the OWNER's archive (shared edits go to the original).
+    owner_data = user_data_dir(owner_id)
+    (owner_data / f"{video_id}.json").write_text(json.dumps(out, indent=2))
+    # The viewer also keeps a local sequence.json so the UI loads cleanly.
+    user_data_dir(user.id).joinpath("sequence.json").write_text(
+        json.dumps(out, indent=2)
+    )
 
     updated = _update_library_entry(
+        owner_id,
         video_id,
         {
             "segment_count": len(out),
@@ -456,34 +708,408 @@ async def update_library_entry(video_id: str, payload: LibraryUpdate) -> JSONRes
     return JSONResponse({**(updated or {}), "segments": out})
 
 
+class LibraryPatch(BaseModel):
+    """Partial update — only fields the client sets are touched."""
+    title: Optional[str] = None
+    crop_start: Optional[float] = Field(default=None, ge=0)
+    crop_end: Optional[float] = Field(default=None, gt=0)
+
+
+@app.patch("/api/library/{video_id}")
+async def patch_library_entry(
+    video_id: str,
+    payload: LibraryPatch,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Rename a video or update its crop bounds (owner only)."""
+    items = _read_library(user.id)
+    if all(i.get("video_id") != video_id for i in items):
+        raise HTTPException(
+            status_code=404,
+            detail="Only the video's owner can rename it or change its crop bounds.",
+        )
+
+    patch = payload.model_dump(exclude_unset=True)
+    if "title" in patch:
+        title = (patch["title"] or "").strip()[:200]
+        patch["title"] = title or f"Video {video_id}"
+
+    if not patch:
+        return JSONResponse(next(i for i in items if i["video_id"] == video_id))
+
+    patch["last_edited_at"] = datetime.now(timezone.utc).isoformat()
+    updated = _update_library_entry(user.id, video_id, patch)
+    return JSONResponse(updated or {})
+
+
+# ---------------------------------------------------------------------------
+# Sharing endpoints
+# ---------------------------------------------------------------------------
+
+
+class ShareRequest(BaseModel):
+    username: str
+    permission: Literal["view", "edit"] = "view"
+
+
+def _require_ownership(user_id: int, video_id: str) -> None:
+    if all(i.get("video_id") != video_id for i in _read_library(user_id)):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the video's owner can manage its sharing.",
+        )
+
+
+@app.get("/api/library/{video_id}/shares")
+async def list_shares(
+    video_id: str,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    _require_ownership(user.id, video_id)
+    shares = auth.shares_for_video(user.id, video_id)
+    return JSONResponse(
+        [
+            {
+                "shared_with_id": s.shared_with_id,
+                "shared_with_username": s.shared_with_username,
+                "permission": s.permission,
+                "created_at": s.created_at,
+            }
+            for s in shares
+        ]
+    )
+
+
+@app.post("/api/library/{video_id}/shares")
+async def create_share_endpoint(
+    video_id: str,
+    payload: ShareRequest,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    _require_ownership(user.id, video_id)
+    recipient = auth.find_user_by_username(payload.username)
+    if not recipient:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No account named '{payload.username}'. "
+                "If they haven't signed up yet, use a share link instead — "
+                "they'll be prompted to create an account when they click it."
+            ),
+        )
+    try:
+        auth.create_share(user.id, video_id, recipient.id, payload.permission)
+    except auth.AuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(
+        {
+            "shared_with_id": recipient.id,
+            "shared_with_username": recipient.username,
+            "permission": payload.permission,
+        }
+    )
+
+
+@app.delete("/api/library/{video_id}/shares/{shared_with_id}")
+async def revoke_share(
+    video_id: str,
+    shared_with_id: int,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    _require_ownership(user.id, video_id)
+    removed = auth.delete_share(user.id, video_id, shared_with_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="No such share")
+    return JSONResponse({"ok": True})
+
+
+# --- Share links ---------------------------------------------------------
+
+
+class ShareLinkRequest(BaseModel):
+    permission: Literal["view", "edit"] = "view"
+
+
+def _absolute_share_url(request: Request, token: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/?share={token}"
+
+
+@app.post("/api/library/{video_id}/share-links")
+async def create_share_link(
+    video_id: str,
+    payload: ShareLinkRequest,
+    request: Request,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    _require_ownership(user.id, video_id)
+    invite = auth.create_share_invite(user.id, video_id, payload.permission)
+    return JSONResponse(
+        {
+            "token": invite.token,
+            "permission": invite.permission,
+            "url": _absolute_share_url(request, invite.token),
+            "created_at": invite.created_at,
+        }
+    )
+
+
+@app.get("/api/library/{video_id}/share-links")
+async def list_share_links(
+    video_id: str,
+    request: Request,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    _require_ownership(user.id, video_id)
+    invites = auth.list_share_invites(user.id, video_id)
+    return JSONResponse(
+        [
+            {
+                "token": i.token,
+                "permission": i.permission,
+                "url": _absolute_share_url(request, i.token),
+                "created_at": i.created_at,
+            }
+            for i in invites
+        ]
+    )
+
+
+@app.delete("/api/library/{video_id}/share-links/{token}")
+async def revoke_share_link(
+    video_id: str,
+    token: str,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    _require_ownership(user.id, video_id)
+    removed = auth.delete_share_invite(user.id, token)
+    if not removed:
+        raise HTTPException(status_code=404, detail="No such share link")
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/share/{token}/preview")
+async def preview_share_invite(token: str) -> JSONResponse:
+    """Public — used by the landing page to say 'X wants to share Y with you'."""
+    invite = auth.find_share_invite(token)
+    if not invite:
+        raise HTTPException(status_code=404, detail="This share link is invalid or has been revoked.")
+    owner = auth.get_user(invite.owner_id)
+    title = None
+    for entry in _read_library(invite.owner_id):
+        if entry.get("video_id") == invite.video_id:
+            title = entry.get("title")
+            break
+    return JSONResponse(
+        {
+            "video_id": invite.video_id,
+            "permission": invite.permission,
+            "owner_username": owner.username if owner else None,
+            "title": title,
+        }
+    )
+
+
+@app.post("/api/share/{token}/accept")
+async def accept_share_invite(
+    token: str,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Redeem a share link as the currently-authenticated user."""
+    invite = auth.find_share_invite(token)
+    if not invite:
+        raise HTTPException(status_code=404, detail="This share link is invalid or has been revoked.")
+    if invite.owner_id == user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="This is your own video — no need to redeem the link.",
+        )
+    try:
+        auth.create_share(invite.owner_id, invite.video_id, user.id, invite.permission)
+    except auth.AuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(
+        {
+            "video_id": invite.video_id,
+            "permission": invite.permission,
+        }
+    )
+
+
 @app.delete("/api/library/{video_id}")
-async def delete_library_entry(video_id: str, purge_files: bool = False) -> JSONResponse:
+async def delete_library_entry(
+    video_id: str,
+    purge_files: bool = False,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
     """Remove a library entry. Pass ?purge_files=true to also delete the MP4."""
-    items = _read_library()
+    items = _read_library(user.id)
     new_items = [i for i in items if i.get("video_id") != video_id]
     if len(new_items) == len(items):
         raise HTTPException(status_code=404, detail=f"Unknown video_id: {video_id}")
-    _write_library(new_items)
+    _write_library(user.id, new_items)
 
-    # Always remove the per-video segments file; only remove the MP4 if asked.
-    seg_path = DATA_DIR / f"{video_id}.json"
+    seg_path = user_data_dir(user.id) / f"{video_id}.json"
     if seg_path.exists():
         seg_path.unlink()
+    # Drop the persisted pose data + meta so it doesn't leak into the tuner.
+    _pose_path(user.id, video_id).unlink(missing_ok=True)
+    _pose_meta_path(user.id, video_id).unlink(missing_ok=True)
     if purge_files:
-        for mp4 in DOWNLOADS_DIR.glob(f"{video_id}.*"):
+        for mp4 in user_downloads_dir(user.id).glob(f"{video_id}.*"):
             mp4.unlink(missing_ok=True)
 
     return JSONResponse({"ok": True, "remaining": len(new_items)})
 
 
 # ---------------------------------------------------------------------------
-# Static assets — frontend, generated JSON, and streamable MP4s
+# Auth API
 # ---------------------------------------------------------------------------
 
-# Mounting StaticFiles gives us Range-request support for free, which is what
-# the HTML5 <video> element needs to seek through an MP4.
-app.mount("/videos", StaticFiles(directory=DOWNLOADS_DIR), name="videos")
-app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
+
+class CredentialsRequest(BaseModel):
+    username: str
+    password: str
+
+
+def _build_session_response(user: auth.User, request: Request) -> JSONResponse:
+    """Mint a session for `user` and attach it as a cookie to the response."""
+    token = auth.create_session(user.id)
+    resp = JSONResponse({"id": user.id, "username": user.username})
+    resp.set_cookie(
+        key=auth.SESSION_COOKIE,
+        value=token,
+        max_age=int(auth.SESSION_LIFETIME.total_seconds()),
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+def _claim_legacy_library(user_id: int) -> None:
+    """One-shot migration: if there's pre-auth data at the root of DATA_DIR /
+    DOWNLOADS_DIR (from before per-user isolation), move it into this user's
+    folder. Only runs when this is the *first* account on the server."""
+    if auth.count_users() != 1:
+        return
+    legacy_lib = DATA_DIR / "library.json"
+    if not legacy_lib.exists():
+        return
+
+    user_data = user_data_dir(user_id)
+    user_dl = user_downloads_dir(user_id)
+
+    # Move library.json
+    (user_data / "library.json").write_text(legacy_lib.read_text())
+    legacy_lib.unlink()
+
+    # Move per-video segments JSONs (everything in DATA_DIR root that's a .json
+    # except the auth DB, library, sequence).
+    for p in DATA_DIR.iterdir():
+        if p.is_dir() or p.name in ("users.db", "sequence.json"):
+            continue
+        if p.suffix == ".json":
+            (user_data / p.name).write_text(p.read_text())
+            p.unlink()
+
+    # Move MP4s (and anything else that looks like a video file).
+    for p in DOWNLOADS_DIR.iterdir():
+        if p.is_dir():
+            continue
+        if p.suffix.lower() in (".mp4", ".webm", ".mov", ".mkv"):
+            p.rename(user_dl / p.name)
+
+
+@app.post("/api/auth/signup")
+async def signup(payload: CredentialsRequest, request: Request) -> JSONResponse:
+    try:
+        user = auth.create_user(payload.username, payload.password)
+    except auth.AuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        _claim_legacy_library(user.id)
+    except Exception as e:
+        # Don't block signup if migration has issues — surface it in logs only.
+        print(f"Legacy migration failed for user {user.id}: {e}")
+    return _build_session_response(user, request)
+
+
+@app.post("/api/auth/login")
+async def login(payload: CredentialsRequest, request: Request) -> JSONResponse:
+    user = auth.authenticate(payload.username, payload.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    return _build_session_response(user, request)
+
+
+@app.post("/api/auth/logout")
+async def logout(session: Optional[str] = Cookie(default=None)) -> JSONResponse:
+    auth.delete_session(session)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+async def me(user: auth.User = Depends(get_current_user)) -> JSONResponse:
+    return JSONResponse({"id": user.id, "username": user.username})
+
+
+class UsernameUpdate(BaseModel):
+    username: str
+
+
+@app.patch("/api/auth/me")
+async def update_my_username(
+    payload: UsernameUpdate,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    try:
+        updated = auth.update_username(user.id, payload.username)
+    except auth.AuthError as e:
+        # 409 Conflict for collisions, 400 for validation errors.
+        status = 409 if "taken" in str(e).lower() else 400
+        raise HTTPException(status_code=status, detail=str(e))
+    return JSONResponse({"id": updated.id, "username": updated.username})
+
+
+# ---------------------------------------------------------------------------
+# Video serving — replaces the old /videos static mount with per-user auth.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/videos/{owner_id}/{filename}")
+async def serve_video(
+    owner_id: int,
+    filename: str,
+    user: auth.User = Depends(get_current_user),
+) -> FileResponse:
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Owner always allowed; everyone else needs a share for this video_id.
+    if user.id != owner_id:
+        video_id = Path(filename).stem
+        if auth.find_share(owner_id, video_id, user.id) is None:
+            raise HTTPException(status_code=403, detail="No access to this video.")
+
+    path = user_downloads_dir(owner_id) / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(path)
+
+
+# Back-compat: redirect the pre-share single-segment URL to the owner-prefixed
+# form, assuming the current user owns it (the only case where the old URL
+# could possibly resolve correctly).
+@app.get("/videos/{filename}")
+async def serve_video_legacy(
+    filename: str,
+    user: auth.User = Depends(get_current_user),
+) -> FileResponse:
+    return await serve_video(user.id, filename, user)
 
 
 @app.get("/")

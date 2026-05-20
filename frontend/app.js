@@ -20,11 +20,37 @@ const nextDrillBtn = document.getElementById("next-drill-btn");
 
 const audioModeRow = document.getElementById("audio-mode");
 
-const youtubeForm = document.getElementById("youtube-form");
+const sourceToggle = document.getElementById("source-toggle");
+const sourceYoutubeRow = document.getElementById("source-youtube");
+const sourceUploadRow = document.getElementById("source-upload");
 const youtubeUrlInput = document.getElementById("youtube-url");
 const youtubeQualitySelect = document.getElementById("youtube-quality");
-const processBtn = document.getElementById("process-btn");
-const processStatus = document.getElementById("process-status");
+const uploadLabel = document.getElementById("upload-label");
+const processVideoBtn = document.getElementById("process-video-btn");
+const processSubtitle = document.getElementById("process-subtitle");
+const cropRow = document.getElementById("crop-row");
+const cropHint = document.getElementById("crop-hint");
+
+const addVideoCard = document.getElementById("add-video-card");
+const addVideoBody = document.getElementById("add-video-body");
+const addVideoCollapseBtn = document.getElementById("add-video-collapse-btn");
+const addVideoTagline = document.getElementById("add-video-tagline");
+
+const quickSegments = document.getElementById("quick-segments");
+const quickSegmentsBtn = document.getElementById("quick-segments-btn");
+const quickSegmentsLabel = document.getElementById("quick-segments-label");
+const quickSegmentsMenu = document.getElementById("quick-segments-menu");
+
+const emptyState = document.getElementById("empty-state");
+const emptyStateLibraryLink = document.getElementById("empty-state-library-link");
+
+const processBanner = document.getElementById("process-banner");
+const processBannerPhase = document.getElementById("process-banner-phase");
+const processBannerDetail = document.getElementById("process-banner-detail");
+const processBannerTime = document.getElementById("process-banner-time");
+const processBannerSpinner = document.getElementById("process-banner-spinner");
+const processBannerClose = document.getElementById("process-banner-close");
+const processBannerTitle = document.getElementById("process-banner-title");
 
 const libraryBtn = document.getElementById("library-btn");
 const libraryPanel = document.getElementById("library-panel");
@@ -41,12 +67,40 @@ const editorSaveBtn = document.getElementById("editor-save-btn");
 const editorCancelBtn = document.getElementById("editor-cancel-btn");
 const editorStatus = document.getElementById("editor-status");
 
+const authOverlay = document.getElementById("auth-overlay");
+const authForm = document.getElementById("auth-form");
+const authUsername = document.getElementById("auth-username");
+const authPassword = document.getElementById("auth-password");
+const authSubmit = document.getElementById("auth-submit");
+const authError = document.getElementById("auth-error");
+const authTabs = document.querySelectorAll(".auth-tab");
+const userBadge = document.getElementById("user-badge");
+const userNameEl = document.getElementById("user-name");
+const renameUserBtn = document.getElementById("rename-user-btn");
+const userRenameError = document.getElementById("user-rename-error");
+const logoutBtn = document.getElementById("logout-btn");
+const appRoot = document.getElementById("app-root");
+
+const tutorialOverlay = document.getElementById("tutorial-overlay");
+const tutorialBtn = document.getElementById("tutorial-btn");
+const tutorialClose = document.getElementById("tutorial-close");
+const tutorialDismiss = document.getElementById("tutorial-dismiss");
+
+const shareModal = document.getElementById("share-modal");
+const shareClose = document.getElementById("share-close");
+const shareSubtitle = document.getElementById("share-subtitle");
+const shareForm = document.getElementById("share-form");
+const shareUsernameEl = document.getElementById("share-username");
+const shareError = document.getElementById("share-error");
+const shareList = document.getElementById("share-list");
+const shareLinkCreateBtn = document.getElementById("share-link-create");
+const shareLinksList = document.getElementById("share-links-list");
+
 const cropStartInput = document.getElementById("crop-start");
 const cropEndInput = document.getElementById("crop-end");
 const cropStartRange = document.getElementById("crop-start-range");
 const cropEndRange = document.getElementById("crop-end-range");
 const cropDuration = document.getElementById("crop-duration");
-const cropProcessBtn = document.getElementById("crop-process-btn");
 const cropPreviewStartBtn = document.getElementById("crop-preview-start-btn");
 const cropPreviewEndBtn = document.getElementById("crop-preview-end-btn");
 const cropResetBtn = document.getElementById("crop-reset-btn");
@@ -89,17 +143,12 @@ const REPS_BY_TYPE = { drill: 3, combine: 2 };
 
 async function loadSegments() {
   try {
-    const res = await fetch("/data/sequence.json", { cache: "no-store" });
+    const res = await fetch("/api/sequence", { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
-    console.warn("Falling back to sample segments:", err);
-    return [
-      { id: 1, label: "Segment 1", start: 0.0, end: 3.4 },
-      { id: 2, label: "Segment 2", start: 3.4, end: 6.8 },
-      { id: 3, label: "Segment 3", start: 6.8, end: 10.2 },
-      { id: 4, label: "Segment 4", start: 10.2, end: 13.6 },
-    ];
+    console.warn("Couldn't load saved sequence:", err);
+    return [];
   }
 }
 
@@ -111,18 +160,20 @@ function renderSegments(segments) {
   segmentGrid.innerHTML = "";
   if (!segments.length) {
     segmentGrid.innerHTML =
-      '<p class="col-span-full text-sm text-slate-500 text-center py-8">No segments available.</p>';
+      '<p class="text-sm text-slate-500 text-center py-8">No segments available.</p>';
+    applySegmentsLayout(0);
+    renderQuickSegments([]);
     return;
   }
 
   for (const seg of segments) {
     const btn = document.createElement("button");
     btn.className =
-      "segment-btn px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-left hover:bg-slate-50 transition-all";
+      "segment-btn flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-left hover:bg-slate-50 transition-all";
     btn.dataset.id = String(seg.id);
     btn.innerHTML = `
-      <div class="font-semibold">${seg.label}</div>
-      <div class="text-xs text-slate-500 font-mono">${seg.start.toFixed(2)}s – ${seg.end.toFixed(2)}s</div>
+      <span class="text-xs font-semibold truncate min-w-0">${seg.label}</span>
+      <span class="text-[10px] text-slate-500 font-mono whitespace-nowrap">${seg.start.toFixed(1)}–${seg.end.toFixed(1)}s</span>
     `;
     btn.addEventListener("click", () => {
       if (workshop.active) return; // manual selection disabled in workshop mode
@@ -130,7 +181,124 @@ function renderSegments(segments) {
     });
     segmentGrid.appendChild(btn);
   }
+  applySegmentsLayout(segments.length);
+  renderQuickSegments(segments);
 }
+
+/** Adjust the main grid's right-column width based on how many segments
+    exist, so a sparse video gets a wider player while a dense one keeps
+    the buttons readable. Only applies at the lg breakpoint and up. */
+function applySegmentsLayout(count) {
+  const main = document.getElementById("main-layout");
+  if (!main) return;
+  if (window.innerWidth < 1024) {
+    main.style.gridTemplateColumns = "";
+    return;
+  }
+  let width;
+  if (count <= 6) width = "240px";
+  else if (count <= 14) width = "260px";
+  else if (count <= 24) width = "300px";
+  else width = "340px";
+  main.style.gridTemplateColumns = `minmax(0, 1fr) ${width}`;
+}
+
+window.addEventListener("resize", () => applySegmentsLayout(allSegments.length));
+
+/* ---------------------------------------------------------------- */
+/* Collapsible Add-a-video card                                      */
+/* ---------------------------------------------------------------- */
+
+let addVideoCollapsed = false;
+
+function setAddVideoCollapsed(collapsed) {
+  addVideoCollapsed = collapsed;
+  addVideoBody.classList.toggle("hidden", collapsed);
+  sourceToggle.classList.toggle("hidden", collapsed);
+  addVideoCollapseBtn.textContent = collapsed ? "+" : "−";
+  addVideoCollapseBtn.title = collapsed ? "Expand to add another video" : "Collapse";
+  addVideoTagline.textContent = collapsed
+    ? "Click + to add another video."
+    : "Paste a YouTube link or upload a file, optionally crop, then process.";
+}
+
+addVideoCollapseBtn.addEventListener("click", () =>
+  setAddVideoCollapsed(!addVideoCollapsed)
+);
+
+/* ---------------------------------------------------------------- */
+/* Quick-segment dropdown (overlays the video)                       */
+/* ---------------------------------------------------------------- */
+
+function renderQuickSegments(segments) {
+  if (!segments || !segments.length) {
+    quickSegments.classList.add("hidden");
+    quickSegmentsMenu.classList.add("hidden");
+    return;
+  }
+  quickSegments.classList.remove("hidden");
+
+  quickSegmentsMenu.innerHTML = "";
+  for (const seg of segments) {
+    const item = document.createElement("button");
+    item.dataset.id = String(seg.id);
+    item.className =
+      "quick-seg w-full text-left text-xs px-3 py-1.5 hover:bg-indigo-50 flex items-center justify-between gap-2 border-b border-slate-100 last:border-b-0";
+    item.innerHTML = `
+      <span class="font-medium truncate min-w-0">${escapeAttr(seg.label)}</span>
+      <span class="text-[10px] text-slate-500 font-mono whitespace-nowrap">${seg.start.toFixed(1)}–${seg.end.toFixed(1)}s</span>
+    `;
+    item.addEventListener("click", () => {
+      quickPlaySegment(seg);
+      quickSegmentsMenu.classList.add("hidden");
+    });
+    quickSegmentsMenu.appendChild(item);
+  }
+  updateQuickSegmentsState();
+}
+
+function updateQuickSegmentsState() {
+  // Reflect the currently-active selection in both the button label and
+  // an "active" highlight inside the dropdown.
+  if (workshop.active) {
+    quickSegmentsLabel.textContent = "Workshop running";
+  } else if (selectedSegments.length === 0) {
+    quickSegmentsLabel.textContent = "Pick segment";
+  } else if (selectedSegments.length === 1) {
+    quickSegmentsLabel.textContent = selectedSegments[0].label;
+  } else {
+    quickSegmentsLabel.textContent = `${selectedSegments.length} selected`;
+  }
+  const activeIds = new Set(selectedSegments.map((s) => String(s.id)));
+  quickSegmentsMenu.querySelectorAll(".quick-seg").forEach((el) => {
+    el.classList.toggle("bg-indigo-50", activeIds.has(el.dataset.id));
+    el.classList.toggle("text-indigo-700", activeIds.has(el.dataset.id));
+  });
+}
+
+function quickPlaySegment(seg) {
+  if (workshop.active) return; // workshop owns the loop
+  // Single-select: replace whatever was selected with just this segment.
+  selectedSegments = [seg];
+  document
+    .querySelectorAll(".segment-btn.active")
+    .forEach((b) => b.classList.remove("active"));
+  document
+    .querySelectorAll(`.segment-btn[data-id="${seg.id}"]`)
+    .forEach((b) => b.classList.add("active"));
+  onManualSelectionChanged();
+}
+
+quickSegmentsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  quickSegmentsMenu.classList.toggle("hidden");
+});
+
+document.addEventListener("click", (e) => {
+  if (!quickSegments.contains(e.target)) {
+    quickSegmentsMenu.classList.add("hidden");
+  }
+});
 
 function toggleSegment(seg, btn) {
   const idx = selectedSegments.findIndex((s) => s.id === seg.id);
@@ -159,6 +327,7 @@ function onManualSelectionChanged() {
   updateLoopDisplay();
   segmentCount.textContent = `${selectedSegments.length} selected`;
   clearBtn.disabled = selectedSegments.length === 0;
+  if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
 
   if (loopBounds) {
     if (video.currentTime < loopBounds.start || video.currentTime >= loopBounds.end) {
@@ -249,6 +418,7 @@ function startWorkshop() {
   workshopBanner.classList.remove("hidden");
   setSegmentsLocked(true);
   enterPhase(0);
+  if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
 
   video.play().catch(() => {});
 }
@@ -268,6 +438,7 @@ function stopWorkshop() {
   loopBounds = null;
   highlightWorkshopSegments([]);
   updateLoopDisplay();
+  if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
 }
 
 function enterPhase(idx) {
@@ -654,10 +825,12 @@ function updateCropDurationLabel() {
   const crop = getCropBounds();
   if (!crop) {
     cropDuration.textContent = "Full video";
-    return;
+  } else {
+    const dur = Math.max(0, crop.end - crop.start);
+    cropDuration.textContent = `${dur.toFixed(2)}s · ${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s`;
   }
-  const dur = Math.max(0, crop.end - crop.start);
-  cropDuration.textContent = `Selected: ${dur.toFixed(2)}s (${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s)`;
+  // Keep the action-row subtitle in sync with the crop selection.
+  if (typeof updateProcessSubtitle === "function") updateProcessSubtitle();
 }
 
 function syncCropPair(numberEl, rangeEl, source) {
@@ -703,27 +876,187 @@ video.addEventListener("loadedmetadata", () => {
   const preset = pendingCrop;
   pendingCrop = null;
   clampCropToDuration(video.duration, preset);
+  // A valid-duration video is loaded — drop the "load a file first" hint and
+  // let the actual inputs do the talking.
+  if (cropHint) cropHint.classList.add("hidden");
 });
 
 /* ---------------------------------------------------------------- */
 /* Process Video — single button that respects the crop selection    */
 /* ---------------------------------------------------------------- */
 
-function setProcessing(isProcessing, message) {
-  cropProcessBtn.disabled = isProcessing;
-  processBtn.disabled = isProcessing;
-  if (message) {
-    processStatus.textContent = message;
-    processStatus.classList.toggle("text-rose-600", false);
-    processStatus.classList.toggle("text-slate-500", true);
+/* ---------- Sticky processing banner ---------- */
+
+let bannerTimerHandle = null;
+let bannerStartedAt = 0;
+
+function formatElapsed(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function phaseForElapsed(seconds) {
+  // We don't have real progress signals from the server, so approximate by
+  // typical pipeline durations.
+  if (seconds < 20) return "Downloading";
+  if (seconds < 60) return "Extracting pose";
+  return "Segmenting";
+}
+
+function startProcessingBanner(detail) {
+  bannerStartedAt = Date.now();
+  processBanner.classList.remove(
+    "hidden",
+    "bg-emerald-600",
+    "bg-rose-600",
+    "bg-indigo-600"
+  );
+  processBanner.classList.add("bg-indigo-600", "flex");
+  processBannerSpinner.classList.remove("hidden");
+  processBannerClose.classList.add("hidden");
+  processBannerTitle.textContent = "Processing video…";
+  processBannerPhase.classList.remove("hidden");
+  processBannerPhase.textContent = "Downloading";
+  processBannerDetail.textContent =
+    detail || "This usually takes a few minutes. You can keep this tab open.";
+  processBannerTime.textContent = "0:00";
+
+  if (bannerTimerHandle) clearInterval(bannerTimerHandle);
+  bannerTimerHandle = setInterval(() => {
+    const elapsed = (Date.now() - bannerStartedAt) / 1000;
+    processBannerTime.textContent = formatElapsed(elapsed);
+    processBannerPhase.textContent = phaseForElapsed(elapsed);
+  }, 1000);
+}
+
+function stopProcessingBanner() {
+  if (bannerTimerHandle) {
+    clearInterval(bannerTimerHandle);
+    bannerTimerHandle = null;
   }
 }
 
-function showProcessError(msg) {
-  processStatus.textContent = `Failed: ${msg}`;
-  processStatus.classList.remove("text-slate-500");
-  processStatus.classList.add("text-rose-600");
+function showProcessingSuccess(message) {
+  stopProcessingBanner();
+  processBanner.classList.remove("bg-indigo-600", "bg-rose-600");
+  processBanner.classList.add("bg-emerald-600", "flex");
+  processBanner.classList.remove("hidden");
+  processBannerSpinner.classList.add("hidden");
+  processBannerPhase.classList.add("hidden");
+  processBannerClose.classList.remove("hidden");
+  processBannerTitle.textContent = "✓ " + message;
+  processBannerDetail.textContent = "";
+  processBannerTime.textContent = "";
+  setTimeout(() => {
+    if (!processBanner.classList.contains("bg-emerald-600")) return;
+    processBanner.classList.add("hidden");
+    processBanner.classList.remove("flex");
+  }, 4500);
 }
+
+function showProcessingError(message) {
+  stopProcessingBanner();
+  processBanner.classList.remove("bg-indigo-600", "bg-emerald-600");
+  processBanner.classList.add("bg-rose-600", "flex");
+  processBanner.classList.remove("hidden");
+  processBannerSpinner.classList.add("hidden");
+  processBannerPhase.classList.add("hidden");
+  processBannerClose.classList.remove("hidden");
+  processBannerTitle.textContent = "Failed";
+  processBannerDetail.textContent = message;
+  processBannerTime.textContent = "";
+}
+
+function hideProcessingBanner() {
+  stopProcessingBanner();
+  processBanner.classList.add("hidden");
+  processBanner.classList.remove("flex");
+}
+
+processBannerClose.addEventListener("click", hideProcessingBanner);
+
+/* ---------- Empty state ---------- */
+
+function showEmptyState() {
+  emptyState.classList.remove("hidden");
+  emptyState.classList.add("flex");
+  video.classList.add("hidden");
+}
+
+function hideEmptyState() {
+  emptyState.classList.add("hidden");
+  emptyState.classList.remove("flex");
+  video.classList.remove("hidden");
+}
+
+emptyStateLibraryLink.addEventListener("click", async () => {
+  await refreshLibrary();
+  libraryPanel.classList.remove("hidden");
+});
+
+video.addEventListener("loadeddata", hideEmptyState);
+
+/* ---------- Source toggle ---------- */
+
+let currentSource = "youtube"; // "youtube" | "upload"
+
+function setSource(source) {
+  currentSource = source;
+  document.querySelectorAll(".source-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.source === source);
+  });
+  sourceYoutubeRow.classList.toggle("hidden", source !== "youtube");
+  sourceUploadRow.classList.toggle("hidden", source !== "upload");
+  updateProcessSubtitle();
+}
+
+sourceToggle.addEventListener("click", (e) => {
+  const btn = e.target.closest(".source-btn");
+  if (!btn) return;
+  e.preventDefault();
+  // If user starts a new action while a stale done/error banner is up, clear it.
+  if (
+    processBanner.classList.contains("bg-emerald-600") ||
+    processBanner.classList.contains("bg-rose-600")
+  ) {
+    hideProcessingBanner();
+  }
+  setSource(btn.dataset.source);
+});
+
+/* ---------- Process subtitle (live preview of what will run) ---------- */
+
+function updateProcessSubtitle() {
+  let prefix;
+  if (currentSource === "youtube") {
+    const url = youtubeUrlInput.value.trim();
+    if (!url) {
+      processSubtitle.textContent = "Paste a YouTube URL to enable.";
+      processVideoBtn.disabled = true;
+      return;
+    }
+    prefix = `YouTube ${youtubeQualitySelect.value}`;
+  } else {
+    if (!pendingFile) {
+      processSubtitle.textContent = "Choose a video file to enable.";
+      processVideoBtn.disabled = true;
+      return;
+    }
+    prefix = `"${pendingFile.name}"`;
+  }
+  const crop = getCropBounds();
+  const cropStr = crop
+    ? `crop ${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s`
+    : "full video";
+  processSubtitle.textContent = `Will process ${prefix} · ${cropStr}.`;
+  processVideoBtn.disabled = false;
+}
+
+youtubeUrlInput.addEventListener("input", updateProcessSubtitle);
+youtubeQualitySelect.addEventListener("change", updateProcessSubtitle);
+
+/* ---------- API helpers ---------- */
 
 async function processYouTube(url, crop) {
   const body = { url, quality: youtubeQualitySelect.value };
@@ -762,114 +1095,73 @@ function applyProcessResponse(data) {
   if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
   video.src = data.video_url;
   video.load();
+  hideEmptyState();
   allSegments = data.segments;
   currentVideoId = data.video_id || null;
   renderSegments(allSegments);
   refreshLibrary();
-  processStatus.textContent =
-    `Done — ${data.segment_count} segments from ${data.duration.toFixed(1)}s of cropped video.`;
+
+  let msg = `Done — ${data.segment_count} segments from ${data.duration.toFixed(1)}s.`;
+  if (data.tuning && data.tuning.example_count > 0) {
+    msg += ` ✨ Tuned from your last ${data.tuning.example_count} edited ${data.tuning.example_count === 1 ? "video" : "videos"}.`;
+  }
+  showProcessingSuccess(msg);
+  // Reduce clutter once the user has a real video on screen.
+  setAddVideoCollapsed(true);
 }
 
-cropProcessBtn.addEventListener("click", async () => {
-  const crop = getCropBounds();
-  const url = youtubeUrlInput.value.trim();
+/* ---------- Process Video click handler ---------- */
 
-  if (!url && !pendingFile) {
-    showProcessError("Paste a YouTube URL or pick a local file first.");
+processVideoBtn.addEventListener("click", async () => {
+  if (currentSource === "youtube") {
+    const url = youtubeUrlInput.value.trim();
+    if (!url) return;
+  } else if (!pendingFile) {
     return;
   }
 
   if (workshop.active) stopWorkshop();
   clearSelection();
+
+  const crop = getCropBounds();
   const cropMsg = crop
-    ? `crop ${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s`
-    : "full video";
-  setProcessing(
-    true,
-    `Processing ${cropMsg}… this can take a few minutes.`
-  );
+    ? `Processing crop ${crop.start.toFixed(2)}s → ${crop.end.toFixed(2)}s of your video.`
+    : "Processing the full video.";
+  startProcessingBanner(cropMsg);
+  processVideoBtn.disabled = true;
 
   try {
-    const data = url
-      ? await processYouTube(url, crop)
-      : await processFile(pendingFile, crop);
+    const data =
+      currentSource === "youtube"
+        ? await processYouTube(youtubeUrlInput.value.trim(), crop)
+        : await processFile(pendingFile, crop);
     applyProcessResponse(data);
   } catch (err) {
     console.error(err);
-    showProcessError(err.message);
+    showProcessingError(err.message);
   } finally {
-    setProcessing(false);
+    updateProcessSubtitle(); // re-enables button if inputs still valid
   }
 });
 
-youtubeForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const url = youtubeUrlInput.value.trim();
-  if (!url) return;
-
-  // Tear down any active workshop / selection so the new video starts clean.
-  if (workshop.active) stopWorkshop();
-  clearSelection();
-
-  processBtn.disabled = true;
-  processStatus.textContent =
-    "Downloading, extracting pose, segmenting… this can take a few minutes.";
-  processStatus.classList.remove("text-rose-600");
-  processStatus.classList.add("text-slate-500");
-
-  try {
-    const crop = getCropBounds();
-    const body = { url, quality: youtubeQualitySelect.value };
-    if (crop) {
-      body.start_time = crop.start;
-      body.end_time = crop.end;
-    }
-    const res = await fetch("/api/process", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({}));
-      throw new Error(detail.detail || `HTTP ${res.status}`);
-    }
-    const data = await res.json();
-
-    // Swap in the new video and segments.
-    if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
-    video.src = data.video_url;
-    video.load();
-
-    allSegments = data.segments;
-    renderSegments(allSegments);
-
-    processStatus.textContent = `Done — ${data.segment_count} segments from ${data.duration.toFixed(1)}s of video.`;
-  } catch (err) {
-    console.error(err);
-    processStatus.textContent = `Failed: ${err.message}`;
-    processStatus.classList.remove("text-slate-500");
-    processStatus.classList.add("text-rose-600");
-  } finally {
-    processBtn.disabled = false;
-  }
-});
+/* ---------- File picker ---------- */
 
 videoFileInput.addEventListener("change", (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
 
-  // Preview the picked file locally so the user can see it and set crop
-  // bounds before kicking off the (slow) pipeline. Actual processing is
-  // triggered by the "Process Video" button.
+  // Preview the picked file locally so the user can see it + set crop bounds
+  // before kicking off the slow pipeline. Actual processing happens via the
+  // single Process Video button below.
   if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
   video.src = URL.createObjectURL(file);
   video.load();
 
   pendingFile = file;
-  currentVideoId = null; // cleared until processing completes
-  processStatus.textContent = `Loaded "${file.name}" — adjust crop and click Process Video.`;
-  processStatus.classList.remove("text-rose-600");
-  processStatus.classList.add("text-slate-500");
+  currentVideoId = null;
+  uploadLabel.textContent = file.name;
+  hideProcessingBanner();
+  updateProcessSubtitle();
 });
 
 /* ---------------------------------------------------------------- */
@@ -1142,6 +1434,8 @@ function renderLibrary() {
     card.className =
       "p-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-white hover:border-indigo-300 transition cursor-pointer";
     const dur = entry.duration ? `${entry.duration.toFixed(1)}s` : "—";
+    const isOwner = entry.permission === "owner";
+    const canEdit = entry.permission === "owner" || entry.permission === "edit";
     const sourceBadge =
       entry.source === "youtube"
         ? '<span class="text-[10px] uppercase tracking-wide bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">YouTube</span>'
@@ -1149,28 +1443,45 @@ function renderLibrary() {
     const editedBadge = entry.last_edited_at
       ? `<span class="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded" title="Edited ${formatRelativeTime(entry.last_edited_at)}">edited</span>`
       : "";
+    const sharedByBadge = !isOwner && entry.shared_by_username
+      ? `<span class="text-[10px] uppercase tracking-wide bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded" title="Shared by ${escapeAttr(entry.shared_by_username)}">${entry.permission === "edit" ? "shared · edit" : "shared · view"}</span>`
+      : "";
     const cropNote =
       entry.crop_start != null || entry.crop_end != null
         ? `<span class="text-[10px] text-slate-400">· crop ${(entry.crop_start ?? 0).toFixed(1)}–${(entry.crop_end ?? entry.duration ?? 0).toFixed(1)}s</span>`
         : "";
 
+    const renameBtnHtml = isOwner
+      ? '<button class="lib-rename text-xs text-slate-400 hover:text-slate-700 flex-shrink-0" title="Rename">✎</button>'
+      : "";
+    const ownerActionsHtml = isOwner
+      ? `
+        <button class="lib-share text-xs text-slate-500 hover:text-indigo-700" title="Share">⇪</button>
+        <button class="lib-delete text-xs text-rose-500 hover:text-rose-700" title="Remove from library">🗑</button>`
+      : "";
+
     card.innerHTML = `
       <div class="flex items-start justify-between gap-2">
         <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2 mb-0.5">
+          <div class="flex items-center gap-2 mb-0.5 flex-wrap">
             ${sourceBadge}
+            ${sharedByBadge}
             ${editedBadge}
             <span class="text-xs text-slate-400">${formatRelativeTime(entry.processed_at)}</span>
           </div>
-          <div class="text-sm font-semibold text-slate-900 truncate" title="${escapeAttr(entry.title)}">${escapeAttr(entry.title)}</div>
+          <div class="flex items-center gap-1 min-w-0">
+            <span class="lib-title text-sm font-semibold text-slate-900 truncate outline-none"
+                  contenteditable="false"
+                  title="${escapeAttr(entry.title)}">${escapeAttr(entry.title)}</span>
+            ${renameBtnHtml}
+          </div>
           <div class="text-xs text-slate-500 font-mono mt-0.5">
             ${entry.segment_count} segments · ${dur} ${cropNote}
           </div>
         </div>
-        <button
-          class="lib-delete text-xs text-rose-500 hover:text-rose-700"
-          title="Remove from library"
-        >🗑</button>
+        <div class="flex flex-col items-end gap-1">
+          ${ownerActionsHtml}
+        </div>
       </div>
       <div class="flex gap-2 mt-2">
         <button class="lib-open flex-1 text-xs px-2 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100">
@@ -1189,14 +1500,77 @@ function renderLibrary() {
       e.stopPropagation();
       loadLibraryEntry(entry.video_id, { autoStartWorkshop: true });
     });
-    card.querySelector(".lib-delete").addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!confirm(`Remove "${entry.title}" from library?`)) return;
-      await fetch(`/api/library/${encodeURIComponent(entry.video_id)}`, {
-        method: "DELETE",
-      });
-      await refreshLibrary();
+    const titleEl = card.querySelector(".lib-title");
+    const renameBtn = card.querySelector(".lib-rename");
+
+    function startRename(e) {
+      e?.stopPropagation();
+      if (!isOwner) return; // viewers and editors can't rename
+      titleEl.contentEditable = "true";
+      titleEl.classList.add("border", "border-indigo-400", "px-1", "rounded", "bg-white");
+      titleEl.focus();
+      // Select all so the user can just start typing to replace.
+      const range = document.createRange();
+      range.selectNodeContents(titleEl);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    if (renameBtn) renameBtn.addEventListener("click", startRename);
+    if (isOwner) titleEl.addEventListener("dblclick", startRename);
+
+    async function commitRename() {
+      titleEl.contentEditable = "false";
+      titleEl.classList.remove("border", "border-indigo-400", "px-1", "rounded", "bg-white");
+      const newTitle = titleEl.textContent.trim();
+      if (!newTitle || newTitle === entry.title) {
+        titleEl.textContent = entry.title;
+        return;
+      }
+      try {
+        const res = await fetch(`/api/library/${encodeURIComponent(entry.video_id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: newTitle }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await refreshLibrary();
+      } catch (err) {
+        console.error(err);
+        titleEl.textContent = entry.title;
+      }
+    }
+    titleEl.addEventListener("blur", commitRename);
+    titleEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        titleEl.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        titleEl.textContent = entry.title;
+        titleEl.blur();
+      }
     });
+
+    const deleteBtn = card.querySelector(".lib-delete");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Remove "${entry.title}" from library?`)) return;
+        await fetch(`/api/library/${encodeURIComponent(entry.video_id)}`, {
+          method: "DELETE",
+        });
+        await refreshLibrary();
+      });
+    }
+
+    const shareBtn = card.querySelector(".lib-share");
+    if (shareBtn) {
+      shareBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openShareModal(entry);
+      });
+    }
     libraryList.appendChild(card);
   }
 }
@@ -1235,9 +1609,9 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     renderSegments(allSegments);
 
     libraryPanel.classList.add("hidden");
-    processStatus.textContent = `Loaded "${data.title}" — ${data.segment_count} segments.`;
-    processStatus.classList.remove("text-rose-600");
-    processStatus.classList.add("text-slate-500");
+    hideEmptyState();
+    setAddVideoCollapsed(true);
+    showProcessingSuccess(`Loaded "${data.title}" — ${data.segment_count} segments.`);
 
     if (autoStartWorkshop) {
       // Wait one tick so the video element has a chance to begin loading.
@@ -1245,27 +1619,525 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     }
   } catch (err) {
     console.error(err);
-    processStatus.textContent = `Failed to load: ${err.message}`;
-    processStatus.classList.remove("text-slate-500");
-    processStatus.classList.add("text-rose-600");
+    showProcessingError(`Failed to load: ${err.message}`);
+  }
+}
+
+/** Poll handle that refreshes the library every 8s while the panel is open,
+    so new shares from other users appear without a manual reload. */
+let libraryPollHandle = null;
+
+function startLibraryPoll() {
+  if (libraryPollHandle) return;
+  libraryPollHandle = setInterval(refreshLibrary, 8000);
+}
+
+function stopLibraryPoll() {
+  if (libraryPollHandle) {
+    clearInterval(libraryPollHandle);
+    libraryPollHandle = null;
   }
 }
 
 libraryBtn.addEventListener("click", async () => {
   await refreshLibrary();
-  libraryPanel.classList.toggle("hidden");
+  const wasHidden = libraryPanel.classList.toggle("hidden");
+  if (!wasHidden) startLibraryPoll();
+  else stopLibraryPoll();
 });
-libraryCloseBtn.addEventListener("click", () => libraryPanel.classList.add("hidden"));
+libraryCloseBtn.addEventListener("click", () => {
+  libraryPanel.classList.add("hidden");
+  stopLibraryPoll();
+});
+
+/* ---------------------------------------------------------------- */
+/* Tutorial overlay                                                  */
+/* ---------------------------------------------------------------- */
+
+const TUTORIAL_SEEN_KEY = "dss.tutorial_seen";
+
+function showTutorial() {
+  tutorialOverlay.classList.remove("hidden");
+  tutorialOverlay.classList.add("flex");
+}
+
+function hideTutorial() {
+  tutorialOverlay.classList.add("hidden");
+  tutorialOverlay.classList.remove("flex");
+  try { localStorage.setItem(TUTORIAL_SEEN_KEY, "1"); } catch {}
+}
+
+function maybeShowTutorialForNewUser(libraryItems) {
+  // Auto-open exactly once per browser, and only when the library is empty
+  // (so returning users with content don't get nagged).
+  let seen = false;
+  try { seen = localStorage.getItem(TUTORIAL_SEEN_KEY) === "1"; } catch {}
+  if (!seen && libraryItems.length === 0) showTutorial();
+}
+
+tutorialBtn.addEventListener("click", showTutorial);
+tutorialClose.addEventListener("click", hideTutorial);
+tutorialDismiss.addEventListener("click", hideTutorial);
+tutorialOverlay.addEventListener("click", (e) => {
+  if (e.target === tutorialOverlay) hideTutorial();
+});
+
+/* ---------------------------------------------------------------- */
+/* Share modal                                                       */
+/* ---------------------------------------------------------------- */
+
+function openShareModal(entry) {
+  shareVideoId = entry.video_id;
+  shareSubtitle.textContent = `"${entry.title}" — invite others by email.`;
+  shareUsernameEl.value = "";
+  shareError.classList.add("hidden");
+  shareList.innerHTML =
+    '<p class="text-xs text-slate-400 text-center py-2">Loading shares…</p>';
+  shareModal.classList.remove("hidden");
+  shareModal.classList.add("flex");
+  refreshShares();
+  shareUsernameEl.focus();
+}
+
+function closeShareModal() {
+  shareVideoId = null;
+  shareModal.classList.add("hidden");
+  shareModal.classList.remove("flex");
+}
+
+async function refreshShares() {
+  if (!shareVideoId) return;
+  try {
+    const [sharesRes, linksRes] = await Promise.all([
+      fetch(`/api/library/${encodeURIComponent(shareVideoId)}/shares`),
+      fetch(`/api/library/${encodeURIComponent(shareVideoId)}/share-links`),
+    ]);
+    if (!sharesRes.ok) throw new Error(`HTTP ${sharesRes.status}`);
+    if (!linksRes.ok) throw new Error(`HTTP ${linksRes.status}`);
+    renderShareList(await sharesRes.json());
+    renderShareLinks(await linksRes.json());
+  } catch (err) {
+    shareList.innerHTML = `<p class="text-xs text-rose-600 text-center py-2">${err.message}</p>`;
+  }
+}
+
+function renderShareLinks(links) {
+  shareLinksList.innerHTML = "";
+  if (!links.length) {
+    shareLinksList.innerHTML =
+      '<p class="text-xs text-slate-400 text-center py-1">No active links.</p>';
+    return;
+  }
+  for (const link of links) {
+    const row = document.createElement("div");
+    row.className =
+      "flex items-center gap-2 px-2 py-1.5 rounded-md bg-white border border-slate-200 text-xs";
+    const permClass =
+      link.permission === "edit"
+        ? "bg-amber-100 text-amber-700"
+        : "bg-slate-200 text-slate-700";
+    row.innerHTML = `
+      <span class="px-1.5 py-0.5 rounded ${permClass} text-[10px] uppercase tracking-wide flex-shrink-0">${link.permission}</span>
+      <span class="link-url min-w-0 flex-1 truncate font-mono text-slate-600" title="${escapeAttr(link.url)}">${escapeAttr(link.url)}</span>
+      <button class="link-copy text-indigo-600 hover:text-indigo-800 flex-shrink-0" title="Copy">⧉</button>
+      <button class="link-revoke text-rose-500 hover:text-rose-700 flex-shrink-0" title="Revoke">🗑</button>
+    `;
+    row.querySelector(".link-copy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(link.url);
+        const btn = row.querySelector(".link-copy");
+        const orig = btn.textContent;
+        btn.textContent = "✓";
+        setTimeout(() => (btn.textContent = orig), 1200);
+      } catch {
+        // Fallback: select the URL span so the user can manually copy.
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(row.querySelector(".link-url"));
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    });
+    row.querySelector(".link-revoke").addEventListener("click", async () => {
+      await fetch(
+        `/api/library/${encodeURIComponent(shareVideoId)}/share-links/${encodeURIComponent(link.token)}`,
+        { method: "DELETE" }
+      );
+      await refreshShares();
+    });
+    shareLinksList.appendChild(row);
+  }
+}
+
+shareLinkCreateBtn.addEventListener("click", async () => {
+  shareError.classList.add("hidden");
+  const permission = (document.querySelector('input[name="share-perm"]:checked')?.value || "view");
+  try {
+    const res = await fetch(
+      `/api/library/${encodeURIComponent(shareVideoId)}/share-links`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permission }),
+      }
+    );
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    // Auto-copy the freshly minted URL for the most common workflow.
+    try { await navigator.clipboard.writeText(data.url); } catch {}
+    await refreshShares();
+  } catch (err) {
+    shareError.textContent = err.message;
+    shareError.classList.remove("hidden");
+  }
+});
+
+function renderShareList(shares) {
+  shareList.innerHTML = "";
+  if (!shares.length) {
+    shareList.innerHTML =
+      '<p class="text-xs text-slate-400 text-center py-2">Not shared with anyone yet.</p>';
+    return;
+  }
+  for (const s of shares) {
+    const row = document.createElement("div");
+    row.className =
+      "flex items-center justify-between gap-2 px-2 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-xs";
+    const permClass =
+      s.permission === "edit"
+        ? "bg-amber-100 text-amber-700"
+        : "bg-slate-200 text-slate-700";
+    row.innerHTML = `
+      <div class="min-w-0 flex-1 truncate">${escapeAttr(s.shared_with_username)}</div>
+      <span class="px-1.5 py-0.5 rounded ${permClass} text-[10px] uppercase tracking-wide">${s.permission}</span>
+      <button class="share-revoke text-rose-500 hover:text-rose-700" title="Revoke">🗑</button>
+    `;
+    row.querySelector(".share-revoke").addEventListener("click", async () => {
+      await fetch(
+        `/api/library/${encodeURIComponent(shareVideoId)}/shares/${s.shared_with_id}`,
+        { method: "DELETE" }
+      );
+      await refreshShares();
+    });
+    shareList.appendChild(row);
+  }
+}
+
+function showShareError(message, { offerLink = false } = {}) {
+  shareError.classList.remove("hidden", "text-rose-600");
+  shareError.classList.add("text-rose-600");
+  shareError.innerHTML = "";
+  shareError.appendChild(document.createTextNode(message));
+  if (offerLink) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "ml-2 underline text-indigo-600 hover:text-indigo-800";
+    btn.textContent = "Generate share link instead";
+    btn.addEventListener("click", () => {
+      shareError.classList.add("hidden");
+      shareLinkCreateBtn.focus();
+      shareLinkCreateBtn.click();
+    });
+    shareError.appendChild(btn);
+  }
+}
+
+shareForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  shareError.classList.add("hidden");
+  const permission = (document.querySelector('input[name="share-perm"]:checked')?.value || "view");
+  try {
+    const res = await fetch(
+      `/api/library/${encodeURIComponent(shareVideoId)}/shares`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: shareUsernameEl.value.trim(), permission }),
+      }
+    );
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      // 404 = unknown username; surface the "generate a link instead" affordance.
+      if (res.status === 404) {
+        showShareError(detail.detail || "That username doesn't exist.", { offerLink: true });
+        return;
+      }
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    shareUsernameEl.value = "";
+    await refreshShares();
+  } catch (err) {
+    showShareError(err.message);
+  }
+});
+
+shareClose.addEventListener("click", closeShareModal);
+shareModal.addEventListener("click", (e) => {
+  if (e.target === shareModal) closeShareModal();
+});
+
+/* ---------------------------------------------------------------- */
+/* Share-link redemption (?share=token)                              */
+/* ---------------------------------------------------------------- */
+
+const PENDING_SHARE_KEY = "dss.pending_share_token";
+
+function getPendingShareToken() {
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get("share");
+  if (fromUrl) {
+    try { sessionStorage.setItem(PENDING_SHARE_KEY, fromUrl); } catch {}
+    // Clean the token out of the URL so refreshes don't reapply it.
+    params.delete("share");
+    const cleanQs = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      window.location.pathname + (cleanQs ? "?" + cleanQs : "") + window.location.hash
+    );
+    return fromUrl;
+  }
+  try { return sessionStorage.getItem(PENDING_SHARE_KEY); } catch { return null; }
+}
+
+function clearPendingShareToken() {
+  try { sessionStorage.removeItem(PENDING_SHARE_KEY); } catch {}
+}
+
+async function fetchSharePreview(token) {
+  try {
+    const res = await fetch(`/api/share/${encodeURIComponent(token)}/preview`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function redeemPendingShareIfAny() {
+  const token = getPendingShareToken();
+  if (!token) return;
+  try {
+    const res = await fetch(`/api/share/${encodeURIComponent(token)}/accept`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    clearPendingShareToken();
+    showProcessingSuccess(
+      `Added shared video to your library (${data.permission} access).`
+    );
+  } catch (err) {
+    clearPendingShareToken();
+    console.warn("Couldn't redeem share token:", err);
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Auth                                                              */
+/* ---------------------------------------------------------------- */
+
+
+let shareVideoId = null;
+
+let authMode = "signin"; // "signin" | "signup"
+
+function setAuthMode(mode) {
+  authMode = mode;
+  authTabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === mode));
+  authSubmit.textContent = mode === "signin" ? "Sign in" : "Create account";
+  authPassword.autocomplete = mode === "signin" ? "current-password" : "new-password";
+  authError.classList.add("hidden");
+}
+
+async function showAuthOverlay() {
+  authOverlay.classList.remove("hidden");
+  authOverlay.classList.add("flex");
+  appRoot.classList.add("hidden");
+  userBadge.classList.add("hidden");
+  userBadge.classList.remove("inline-flex");
+
+  // If the user landed via a share link, tell them why they're seeing the
+  // auth overlay and default the tab to "Sign up" (most likely a new user).
+  const token = getPendingShareToken();
+  if (token) {
+    const preview = await fetchSharePreview(token);
+    if (preview && preview.title) {
+      authError.classList.remove("hidden", "text-rose-600");
+      authError.classList.add("text-slate-600");
+      authError.textContent =
+        `Sign in or sign up to accept "${preview.title}" from ${preview.owner_username} (${preview.permission} access).`;
+      setAuthMode("signup");
+    }
+  }
+}
+
+function hideAuthOverlay() {
+  authOverlay.classList.add("hidden");
+  authOverlay.classList.remove("flex");
+  appRoot.classList.remove("hidden");
+  userBadge.classList.remove("hidden");
+  userBadge.classList.add("inline-flex");
+}
+
+async function checkAuth() {
+  try {
+    const res = await fetch("/api/auth/me", { cache: "no-store" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+authTabs.forEach((tab) =>
+  tab.addEventListener("click", (e) => {
+    e.preventDefault();
+    setAuthMode(tab.dataset.tab);
+  })
+);
+
+authForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  authError.classList.add("hidden");
+  authSubmit.disabled = true;
+  const endpoint = authMode === "signin" ? "/api/auth/login" : "/api/auth/signup";
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: authUsername.value.trim(),
+        password: authPassword.value,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    // Reload so the app boots cleanly with the new session cookie.
+    window.location.reload();
+  } catch (err) {
+    authError.textContent = err.message;
+    authError.classList.remove("hidden");
+    authSubmit.disabled = false;
+  }
+});
+
+logoutBtn.addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  window.location.reload();
+});
+
+function startUsernameEdit() {
+  userRenameError.classList.add("hidden");
+  userNameEl.contentEditable = "true";
+  userNameEl.classList.add("border", "border-indigo-400", "px-1", "rounded", "bg-white");
+  userNameEl.dataset.original = userNameEl.textContent;
+  userNameEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(userNameEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function endUsernameEdit() {
+  userNameEl.contentEditable = "false";
+  userNameEl.classList.remove("border", "border-indigo-400", "px-1", "rounded", "bg-white");
+}
+
+function showRenameError(msg) {
+  userRenameError.textContent = msg;
+  userRenameError.classList.remove("hidden");
+}
+
+async function commitUsernameEdit() {
+  const original = userNameEl.dataset.original || "";
+  const next = userNameEl.textContent.trim();
+
+  endUsernameEdit();
+
+  if (!next || next === original) {
+    userNameEl.textContent = original;
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/auth/me", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: next }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    userNameEl.textContent = data.username;
+    userRenameError.classList.add("hidden");
+    // Library may also display this username on shared cards — refresh it.
+    refreshLibrary();
+  } catch (err) {
+    userNameEl.textContent = original;
+    showRenameError(err.message);
+  }
+}
+
+renameUserBtn.addEventListener("click", startUsernameEdit);
+userNameEl.addEventListener("dblclick", startUsernameEdit);
+userNameEl.addEventListener("blur", () => {
+  if (userNameEl.contentEditable === "true") commitUsernameEdit();
+});
+userNameEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    userNameEl.blur();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    userNameEl.textContent = userNameEl.dataset.original || userNameEl.textContent;
+    endUsernameEdit();
+  }
+});
 
 /* ---------------------------------------------------------------- */
 /* Boot                                                              */
 /* ---------------------------------------------------------------- */
 
 (async () => {
+  // Run this early so a share token in the URL gets stashed into sessionStorage
+  // before any reload (e.g. after a fresh sign-up).
+  getPendingShareToken();
+
+  const user = await checkAuth();
+  if (!user) {
+    await showAuthOverlay();
+    setAuthMode(getPendingShareToken() ? "signup" : "signin");
+    return; // don't boot the rest of the app until logged in
+  }
+  hideAuthOverlay();
+  userNameEl.textContent = user.username;
+
+  // Redeem any pending share now that we're authenticated.
+  await redeemPendingShareIfAny();
+
   video.volume = VIDEO_VOLUME_BY_MODE[counts.mode]; // default: On Audio @ 1.0
+  setSource("youtube");
+  updateProcessSubtitle();
+  // Empty-state shows by default since no video src is set; it'll hide when
+  // either a library entry is loaded or the user picks a local file.
+  showEmptyState();
   allSegments = await loadSegments();
   renderSegments(allSegments);
-  refreshLibrary(); // populate count badge in header
+  await refreshLibrary();
+  maybeShowTutorialForNewUser(libraryCache);
 })();
 
 /* Exposed for testing / console use. */
