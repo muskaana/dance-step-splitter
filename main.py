@@ -33,7 +33,10 @@ DATA_DIR = ROOT / "data"
 DOWNLOADS_DIR = ROOT / "downloads"
 
 for d in (DATA_DIR, DOWNLOADS_DIR):
-    d.mkdir(exist_ok=True)
+    # resolve() follows symlinks; needed when DATA_DIR / DOWNLOADS_DIR are
+    # symlinked to a persistent-volume location that doesn't exist yet
+    # (Fly.io mounts an empty volume over the build-time target).
+    d.resolve().mkdir(parents=True, exist_ok=True)
 
 LIBRARY_PATH = DATA_DIR / "library.json"
 

@@ -34,4 +34,6 @@ RUN rm -rf /app/data /app/downloads \
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Ensure the volume sub-directories exist before the app imports — the volume
+# is mounted at /persistent and starts empty on first boot.
+CMD ["sh", "-c", "mkdir -p /persistent/data /persistent/downloads && exec uvicorn main:app --host 0.0.0.0 --port 8000"]
