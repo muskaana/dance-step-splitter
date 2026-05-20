@@ -7,9 +7,9 @@ from typing import Literal
 
 import yt_dlp
 
-Quality = Literal["480p", "720p"]
+Quality = Literal["480p", "720p", "1080p"]
 
-_HEIGHT_BY_QUALITY: dict[Quality, int] = {"480p": 480, "720p": 720}
+_HEIGHT_BY_QUALITY: dict[Quality, int] = {"480p": 480, "720p": 720, "1080p": 1080}
 
 
 def build_format_selector(quality: Quality) -> str:
@@ -59,6 +59,7 @@ def download_video(
     quality: Quality = "720p",
     filename_template: str = "%(id)s.%(ext)s",
     cookies_from_browser: str | None = None,
+    cookies_file: str | Path | None = None,
 ) -> tuple[Path, dict]:
     """Download a YouTube video as MP4 at the requested quality.
 
@@ -100,10 +101,26 @@ def download_video(
         (cookies_from_browser,) if cookies_from_browser else _COOKIE_BROWSERS
     )
     attempts: list[dict] = []
+
+    # Highest-priority: a Netscape-format cookies.txt that authenticates as a
+    # real signed-in YouTube account. This is the cleanest way to dodge YT's
+    # cloud-IP throttling on Fly.
+    cookies_path = Path(cookies_file) if cookies_file else None
+    if cookies_path and cookies_path.exists():
+        attempts.append(
+            {
+                "cookiefile": str(cookies_path),
+                "extractor_args": {
+                    "youtube": {"player_client": ["web", "ios", "android"]}
+                },
+            }
+        )
+
     for clients in _PLAYER_CLIENT_FALLBACKS:
         attempts.append(
             {"extractor_args": {"youtube": {"player_client": list(clients)}}}
         )
+    # Browser cookies (only useful locally — Fly can't read your Mac browser).
     for browser in cookie_browsers:
         attempts.append(
             {
@@ -134,6 +151,16 @@ def download_video(
                         "uploader": info.get("uploader"),
                         "duration": info.get("duration"),
                         "webpage_url": info.get("webpage_url") or url,
+                        # Actual quality served — diagnose silent downgrades.
+                        "height": info.get("height"),
+                        "width": info.get("width"),
+                        "format_note": info.get("format_note"),
+                        "player_client": (
+                            extra.get("extractor_args", {})
+                            .get("youtube", {})
+                            .get("player_client")
+                        ),
+                        "used_cookies": "cookiesfrombrowser" in extra,
                     }
                     return downloaded, summary
         except Exception as e:

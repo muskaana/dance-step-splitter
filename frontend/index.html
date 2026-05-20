@@ -325,20 +325,27 @@
           <div id="add-video-body" class="space-y-3 mt-3">
 
           <!-- Source row: shows either URL+quality or file picker -->
-          <div id="source-youtube" class="flex flex-wrap items-center gap-2">
-            <input
-              id="youtube-url"
-              type="url"
-              placeholder="https://www.youtube.com/watch?v=…"
-              class="flex-1 min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-            <select
-              id="youtube-quality"
-              class="px-3 py-2 rounded-md border border-slate-300 text-sm bg-white"
-            >
-              <option value="720p">720p</option>
-              <option value="480p">480p</option>
-            </select>
+          <div id="source-youtube" class="space-y-1.5">
+            <div class="flex flex-wrap items-center gap-2">
+              <input
+                id="youtube-url"
+                type="url"
+                placeholder="https://www.youtube.com/watch?v=…"
+                class="flex-1 min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <select
+                id="youtube-quality"
+                class="px-3 py-2 rounded-md border border-slate-300 text-sm bg-white"
+              >
+                <option value="1080p">1080p</option>
+                <option value="720p" selected>720p</option>
+                <option value="480p">480p</option>
+              </select>
+            </div>
+            <p class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 flex items-start gap-1.5">
+              <span class="font-semibold">Heads up:</span>
+              <span>YouTube throttles cloud-hosted downloads, so the resulting video may come back at lower resolution. For best quality, download the video yourself and use <strong>Upload file</strong> instead.</span>
+            </p>
           </div>
           <div id="source-upload" class="hidden">
             <label class="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-slate-300 bg-slate-50 cursor-pointer hover:bg-slate-100 text-sm">
@@ -596,11 +603,49 @@
             </button>
 
             <button
-              id="workshop-btn"
-              class="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 shadow-sm"
+              id="share-controls-btn"
+              class="hidden px-4 py-2 rounded-md border border-indigo-300 bg-white text-indigo-700 text-sm font-semibold hover:bg-indigo-50"
+              title="Share this video"
             >
-              Start Workshop
+              Share
             </button>
+
+            <div class="relative flex items-center gap-1">
+              <button
+                id="workshop-btn"
+                class="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 shadow-sm"
+              >
+                Start Workshop
+              </button>
+              <button
+                id="workshop-help-btn"
+                type="button"
+                class="w-6 h-6 rounded-full border border-slate-300 text-slate-500 hover:bg-slate-100 text-xs leading-none"
+                title="What is Workshop Mode?"
+              >?</button>
+              <div
+                id="workshop-help-popover"
+                class="hidden absolute right-0 top-full mt-2 z-30 w-72 bg-white border border-slate-200 rounded-lg shadow-xl p-3 text-xs text-slate-700"
+              >
+                <div class="flex items-start justify-between gap-2 mb-1.5">
+                  <h4 class="font-semibold text-slate-900">Workshop Mode</h4>
+                  <button id="workshop-help-close" class="text-slate-400 hover:text-slate-700 leading-none">×</button>
+                </div>
+                <p class="mb-1.5">
+                  A guided practice session that mimics how an in-person teacher
+                  drills choreography:
+                </p>
+                <ul class="list-disc pl-4 space-y-0.5">
+                  <li>Drill segment 1 (3 reps)</li>
+                  <li>Drill segment 2 (3 reps)</li>
+                  <li>Combine 1+2 (2 reps)</li>
+                  <li>Drill segment 3, combine 1+2+3, …</li>
+                </ul>
+                <p class="mt-1.5 text-slate-500">
+                  Use the speed and counts controls below if you need slower tempo.
+                </p>
+              </div>
+            </div>
           </div>
 
         </section>
@@ -617,13 +662,6 @@
                   class="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
                 >
                   Edit
-                </button>
-                <button
-                  id="share-current-btn"
-                  class="hidden text-xs px-2.5 py-1 rounded-md border border-indigo-200 bg-white text-indigo-700 font-semibold hover:bg-indigo-50"
-                  title="Share this video"
-                >
-                  Share
                 </button>
               </div>
             </div>

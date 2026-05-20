@@ -227,7 +227,7 @@ app.add_middleware(
 
 class ProcessRequest(BaseModel):
     url: HttpUrl
-    quality: Literal["480p", "720p"] = "720p"
+    quality: Literal["480p", "720p", "1080p"] = "720p"
     model_variant: Literal["lite", "full", "heavy"] = "full"
     sample_every_n_frames: int = Field(default=1, ge=1, le=10)
     min_segment_duration: float = Field(default=4.0, gt=0)
@@ -251,6 +251,9 @@ class ProcessResponse(BaseModel):
     segment_count: int
     segments: list[dict]
     tuning: Optional[TuningInfo] = None
+    # Actual resolution we ended up with (after YouTube's player-client
+    # fallback chain). Null for uploaded files since we have no metadata.
+    height: Optional[int] = None
 
 
 def _load_tuning_examples(
@@ -295,15 +298,27 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
     user_dl = user_downloads_dir(user_id)
     user_data = user_data_dir(user_id)
 
-    # 1. Download
+    # 1. Download.
+    # If a Netscape cookies.txt is on the volume, prefer it — that's the cleanest
+    # workaround for YouTube throttling cloud IPs.
+    cookies_file = DATA_DIR / "cookies.txt"
     video_path, info = downloader.download_video(
         str(req.url),
         output_dir=user_dl,
         quality=req.quality,
         cookies_from_browser=req.cookies_from_browser,
+        cookies_file=cookies_file if cookies_file.exists() else None,
     )
     video_id = video_path.stem
     title = (info.get("title") or video_id) if isinstance(info, dict) else video_id
+    actual_height = info.get("height") if isinstance(info, dict) else None
+    if isinstance(info, dict):
+        print(
+            f"[download] {video_id}: height={info.get('height')} "
+            f"format={info.get('format_note')} "
+            f"client={info.get('player_client')} "
+            f"cookies={info.get('used_cookies')}"
+        )
 
     # 2. Extract pose landmarks (optionally cropped) and persist for the tuner.
     pose_df = pose_extractor.extract_pose_landmarks(
@@ -363,6 +378,7 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         duration=duration,
         segment_count=len(sequence),
         segments=sequence,
+        height=actual_height,
         tuning=(
             TuningInfo(
                 example_count=tuning_result.example_count,

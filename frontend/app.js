@@ -57,7 +57,10 @@ const libraryCount = document.getElementById("library-count");
 const libraryCloseBtn = document.getElementById("library-close-btn");
 
 const editSegmentsBtn = document.getElementById("edit-segments-btn");
-const shareCurrentBtn = document.getElementById("share-current-btn");
+const shareCurrentBtn = document.getElementById("share-controls-btn");
+const workshopHelpBtn = document.getElementById("workshop-help-btn");
+const workshopHelpPopover = document.getElementById("workshop-help-popover");
+const workshopHelpClose = document.getElementById("workshop-help-close");
 const segmentEditor = document.getElementById("segment-editor");
 const editorList = document.getElementById("editor-list");
 const editorAddBtn = document.getElementById("editor-add-btn");
@@ -479,6 +482,9 @@ function stopWorkshop() {
   highlightWorkshopSegments([]);
   updateLoopDisplay();
   if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
+  // Pause playback so the video doesn't keep running once the user explicitly
+  // ended the workshop session.
+  try { video.pause(); } catch {}
 }
 
 function enterPhase(idx) {
@@ -805,6 +811,24 @@ workshopBtn.addEventListener("click", () => {
 });
 nextDrillBtn.addEventListener("click", nextDrill);
 prevDrillBtn.addEventListener("click", previousDrill);
+
+// "?" popover next to the workshop button.
+workshopHelpBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  workshopHelpPopover.classList.toggle("hidden");
+});
+workshopHelpClose.addEventListener("click", () => {
+  workshopHelpPopover.classList.add("hidden");
+});
+document.addEventListener("click", (e) => {
+  if (
+    !workshopHelpPopover.classList.contains("hidden") &&
+    !workshopHelpPopover.contains(e.target) &&
+    e.target !== workshopHelpBtn
+  ) {
+    workshopHelpPopover.classList.add("hidden");
+  }
+});
 
 audioModeRow.addEventListener("click", (e) => {
   const btn = e.target.closest(".audio-mode-btn");
@@ -1146,6 +1170,12 @@ function applyProcessResponse(data) {
   startEntryPoll(currentVideoId, null);
 
   let msg = `Done — ${data.segment_count} segments from ${data.duration.toFixed(1)}s.`;
+  if (data.height) {
+    msg += ` Got ${data.height}p.`;
+    if (data.height < 480) {
+      msg += " YouTube throttled the source — upload the file directly for better quality.";
+    }
+  }
   if (data.tuning && data.tuning.example_count > 0) {
     msg += ` ✨ Tuned from your last ${data.tuning.example_count} edited ${data.tuning.example_count === 1 ? "video" : "videos"}.`;
   }
