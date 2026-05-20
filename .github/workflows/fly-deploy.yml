@@ -1,0 +1,30 @@
+name: Deploy to Fly.io
+
+on:
+  # Auto-deploy on every push to main.
+  push:
+    branches: [main]
+  # Also lets you trigger a deploy manually from the Actions tab.
+  workflow_dispatch:
+
+# Cancel any in-flight deploy when a new commit lands so we don't queue up
+# multiple deploys racing each other.
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy app
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dance Step Splitter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      .mirrored {
+        transform: scaleX(-1);
+      }
+      .segment-btn.active {
+        background-color: #4f46e5;
+        color: white;
+        border-color: #4338ca;
+        box-shadow: 0 4px 10px -2px rgba(79, 70, 229, 0.5);
+      }
+      .speed-btn.active {
+        background-color: #1f2937;
+        color: white;
+      }
+      .audio-mode-btn.active {
+        background-color: #0f172a;
+        color: white;
+      }
+      .segment-btn.locked {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .segment-btn.workshop-current {
+        background-color: #f59e0b;
+        color: white;
+        border-color: #d97706;
+        box-shadow: 0 4px 10px -2px rgba(245, 158, 11, 0.5);
+      }
+      @keyframes rep-pulse {
+        0%   { transform: scale(1);   }
+        50%  { transform: scale(1.2); color: #ea580c; }
+        100% { transform: scale(1);   }
+      }
+      .rep-pulse {
+        animation: rep-pulse 0.35s ease-out;
+      }
+    </style>
+  </head>
+  <body class="bg-slate-100 min-h-screen text-slate-800">
+    <div class="max-w-7xl mx-auto p-4 lg:p-8">
+      <header class="mb-6 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 class="text-2xl lg:text-3xl font-bold text-slate-900">Dance Step Splitter</h1>
+            <p class="text-sm text-slate-500">
+              Click segments to loop them. Combine multiple to practice a run.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              id="library-btn"
+              type="button"
+              class="text-sm bg-white border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50"
+            >
+              Library <span id="library-count" class="text-xs text-slate-500 ml-1"></span>
+            </button>
+            <label
+              class="text-sm bg-white border border-slate-300 px-3 py-2 rounded-lg cursor-pointer hover:bg-slate-50"
+            >
+              Upload & process local video
+              <input id="video-file" type="file" accept="video/*" class="hidden" />
+            </label>
+          </div>
+        </div>
+
+        <section
+          id="library-panel"
+          class="hidden bg-white border border-slate-200 rounded-xl shadow-sm p-3"
+        >
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold text-slate-900">Your processed videos</h3>
+            <button
+              id="library-close-btn"
+              class="text-xs text-slate-500 hover:text-slate-800"
+            >
+              Close
+            </button>
+          </div>
+          <div id="library-list" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+            <p class="col-span-full text-xs text-slate-500 text-center py-6">Loading…</p>
+          </div>
+        </section>
+
+        <form
+          id="youtube-form"
+          class="bg-white border border-slate-200 rounded-xl shadow-sm p-3 flex flex-wrap items-center gap-2"
+        >
+          <input
+            id="youtube-url"
+            type="url"
+            required
+            placeholder="Paste a YouTube URL — e.g. https://www.youtube.com/watch?v=…"
+            class="flex-1 min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <select
+            id="youtube-quality"
+            class="px-3 py-2 rounded-md border border-slate-300 text-sm bg-white"
+          >
+            <option value="720p">720p</option>
+            <option value="480p">480p</option>
+          </select>
+          <button
+            id="process-btn"
+            type="submit"
+            class="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed"
+          >
+            Process video
+          </button>
+          <span id="process-status" class="text-xs text-slate-500 w-full sm:w-auto"></span>
+        </form>
+      </header>
+
+      <main class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        <!-- LEFT: video + controls -->
+        <section class="lg:col-span-3 space-y-4">
+          <!-- Workshop Mode banner -->
+          <div
+            id="workshop-banner"
+            class="bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl shadow-lg p-4 hidden"
+          >
+            <div class="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div class="text-xs uppercase tracking-wide text-indigo-100">
+                  Workshop Mode
+                </div>
+                <div id="workshop-phase" class="text-xl font-bold">—</div>
+                <div id="workshop-progress" class="text-xs text-indigo-100 mt-0.5">
+                  Phase 0 of 0
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-xs uppercase tracking-wide text-indigo-100">
+                  Reps Remaining
+                </div>
+                <div id="workshop-reps" class="text-4xl font-bold tabular-nums">0</div>
+              </div>
+            </div>
+            <div class="mt-3 flex gap-2">
+              <button
+                id="prev-drill-btn"
+                class="flex-1 px-3 py-2 rounded-md bg-white/15 hover:bg-white/25 text-sm font-medium border border-white/20"
+              >
+                ← Previous Drill
+              </button>
+              <button
+                id="next-drill-btn"
+                class="flex-1 px-3 py-2 rounded-md bg-white/15 hover:bg-white/25 text-sm font-medium border border-white/20"
+              >
+                Next Drill →
+              </button>
+            </div>
+          </div>
+
+          <div class="bg-black rounded-xl overflow-hidden shadow-lg aspect-video">
+            <video
+              id="player"
+              class="w-full h-full object-contain transition-transform duration-200"
+              controls
+              playsinline
+            ></video>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-4">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-slate-600">Speed</span>
+              <div id="speed-controls" class="flex gap-1">
+                <button data-speed="0.25" class="speed-btn px-3 py-1 rounded-md border border-slate-300 text-sm hover:bg-slate-100">0.25x</button>
+                <button data-speed="0.5" class="speed-btn px-3 py-1 rounded-md border border-slate-300 text-sm hover:bg-slate-100">0.5x</button>
+                <button data-speed="0.75" class="speed-btn px-3 py-1 rounded-md border border-slate-300 text-sm hover:bg-slate-100">0.75x</button>
+                <button data-speed="1" class="speed-btn active px-3 py-1 rounded-md border border-slate-300 text-sm hover:bg-slate-100">1.0x</button>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 ml-auto">
+              <span class="text-sm font-medium text-slate-600">Audio</span>
+              <div id="audio-mode" class="inline-flex rounded-md border border-slate-300 overflow-hidden">
+                <button
+                  data-mode="audio"
+                  class="audio-mode-btn active px-3 py-1 text-sm hover:bg-slate-100"
+                >
+                  On Audio
+                </button>
+                <button
+                  data-mode="counts"
+                  class="audio-mode-btn px-3 py-1 text-sm hover:bg-slate-100 border-l border-slate-300"
+                >
+                  On Counts
+                </button>
+              </div>
+            </div>
+
+            <button
+              id="mirror-btn"
+              class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+            >
+              Mirror Mode: <span id="mirror-state">Off</span>
+            </button>
+
+            <button
+              id="workshop-btn"
+              class="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 shadow-sm"
+            >
+              Start Workshop
+            </button>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-sm p-4 space-y-3">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <h3 class="font-semibold text-slate-900 text-sm">Crop choreography</h3>
+              <span id="crop-duration" class="text-xs text-slate-500 font-mono">—</span>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label class="block text-sm">
+                <span class="text-slate-600">Dance Start Time (s)</span>
+                <div class="flex items-center gap-2 mt-1">
+                  <input
+                    id="crop-start"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="w-24 px-2 py-1 rounded-md border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <input
+                    id="crop-start-range"
+                    type="range"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="flex-1 accent-indigo-600"
+                  />
+                </div>
+              </label>
+
+              <label class="block text-sm">
+                <span class="text-slate-600">Dance End Time (s)</span>
+                <div class="flex items-center gap-2 mt-1">
+                  <input
+                    id="crop-end"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="w-24 px-2 py-1 rounded-md border border-slate-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <input
+                    id="crop-end-range"
+                    type="range"
+                    step="0.1"
+                    min="0"
+                    value="0"
+                    class="flex-1 accent-indigo-600"
+                  />
+                </div>
+              </label>
+            </div>
+
+            <div class="flex items-center gap-2 flex-wrap pt-1">
+              <button
+                id="crop-preview-start-btn"
+                type="button"
+                class="px-3 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Use playhead → Start
+              </button>
+              <button
+                id="crop-preview-end-btn"
+                type="button"
+                class="px-3 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Use playhead → End
+              </button>
+              <button
+                id="crop-reset-btn"
+                type="button"
+                class="px-3 py-1 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Reset crop
+              </button>
+              <button
+                id="crop-process-btn"
+                type="button"
+                class="ml-auto px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed"
+              >
+                Process Video
+              </button>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl shadow-sm p-4 text-sm text-slate-600">
+            <div class="flex justify-between items-center">
+              <span>
+                Loop:
+                <span id="loop-display" class="font-mono text-slate-900">— → —</span>
+              </span>
+              <button
+                id="clear-btn"
+                class="text-indigo-600 hover:text-indigo-800 font-medium disabled:text-slate-400 disabled:cursor-not-allowed"
+                disabled
+              >
+                Clear selection
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- RIGHT: segment grid + editor -->
+        <aside class="lg:col-span-2">
+          <div class="bg-white rounded-xl shadow-sm p-4 h-full">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="font-semibold text-slate-900">Segments</h2>
+              <div class="flex items-center gap-3">
+                <span id="segment-count" class="text-xs text-slate-500">0 selected</span>
+                <button
+                  id="edit-segments-btn"
+                  class="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                >
+                  Edit
+                </button>
+              </div>
+            </div>
+
+            <div
+              id="segment-grid"
+              class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[70vh] overflow-y-auto pr-1"
+            >
+              <p class="col-span-full text-sm text-slate-500 text-center py-8">
+                Loading segments…
+              </p>
+            </div>
+
+            <div id="segment-editor" class="hidden flex-col">
+              <div
+                id="editor-list"
+                class="space-y-2 max-h-[60vh] overflow-y-auto pr-1"
+              ></div>
+              <div class="flex flex-wrap gap-2 pt-3 mt-2 border-t border-slate-200">
+                <button
+                  id="editor-add-btn"
+                  class="px-3 py-1.5 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+                >
+                  + Add at playhead
+                </button>
+                <button
+                  id="editor-split-btn"
+                  class="px-3 py-1.5 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+                >
+                  ✂ Split at playhead
+                </button>
+                <div class="ml-auto flex gap-2">
+                  <button
+                    id="editor-cancel-btn"
+                    class="px-3 py-1.5 text-xs rounded-md border border-slate-300 hover:bg-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    id="editor-save-btn"
+                    class="px-3 py-1.5 text-xs rounded-md bg-indigo-600 text-white font-semibold hover:bg-indigo-700"
+                  >
+                    Save changes
+                  </button>
+                </div>
+              </div>
+              <p id="editor-status" class="text-xs text-slate-500 mt-2"></p>
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

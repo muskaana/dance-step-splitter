@@ -1,0 +1,9 @@
+opencv-python
+mediapipe
+yt-dlp
+fastapi
+uvicorn
+python-multipart
+pandas
+numpy
+anthropic

@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.git/
+.gitignore
+.DS_Store
+.vscode/
+.idea/
+# Don't ship your local library / downloads — the deployed app starts clean.
+data/
+downloads/
+*.log
+/tmp/
