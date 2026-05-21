@@ -494,6 +494,23 @@ def _run_file_pipeline(
     )
 
 
+def _probe_duration(path: Path) -> Optional[float]:
+    """Return media duration in seconds via ffprobe, or None if it fails."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        return float((result.stdout or "").strip())
+    except Exception:
+        return None
+
+
 def _has_audio_stream(path: Path) -> bool:
     """Cheap ffprobe check — is there at least one audio stream in `path`?"""
     try:
@@ -512,23 +529,33 @@ def _has_audio_stream(path: Path) -> bool:
         return False
 
 
-def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
+def _concat_videos(
+    input_paths: list[Path],
+    output_path: Path,
+    trims: Optional[list[tuple[Optional[float], Optional[float]]]] = None,
+) -> None:
     """Concatenate N videos into one MP4 in a single ffmpeg pass.
 
+    Optional per-input trim: `trims[i]` is a `(start, end)` pair in seconds,
+    either bound may be `None` for "no trim on this end". This lets callers
+    apply each source's crop_start / crop_end while concatenating, so the
+    output only contains the meaningful portion of each clip.
+
     Each input's audio is normalized to 44.1 kHz stereo via `aformat` so the
-    concat filter doesn't choke on mismatched sample rates / channel layouts
-    (the most common failure mode with phone clips from different cameras).
+    concat filter doesn't choke on mismatched sample rates / channel layouts.
 
-    Uses `ultrafast` preset because we re-encode 100% of the output stream;
-    the file is plenty good for follow-on pose extraction and re-encoding
-    each frame at higher quality presets is a CPU waste on shared CPUs.
+    Uses `ultrafast` preset — the output is fine for playback and follow-on
+    pose extraction, and slower presets cost CPU we don't have on Fly's
+    shared instance.
 
-    Requires every input to have an audio track. The single-pass filter
-    graph can't easily synthesize silence per-stream, so for now we fail
-    fast with a clear error if any input lacks audio.
+    Requires every input to have an audio track.
     """
     if not input_paths:
         raise ValueError("No input videos to concatenate")
+    if trims is None:
+        trims = [(None, None)] * len(input_paths)
+    if len(trims) != len(input_paths):
+        raise ValueError("trims length must match input_paths length")
 
     missing_audio = [p.name for p in input_paths if not _has_audio_stream(p)]
     if missing_audio:
@@ -543,16 +570,34 @@ def _concat_videos(input_paths: list[Path], output_path: Path) -> None:
     for p in input_paths:
         cmd.extend(["-i", str(p)])
 
-    # Per-input normalization, then concat in one filter graph.
+    def _trim_clause(start: Optional[float], end: Optional[float], audio: bool) -> str:
+        bits: list[str] = []
+        if start is not None:
+            bits.append(f"start={start:.3f}")
+        if end is not None:
+            bits.append(f"end={end:.3f}")
+        if not bits:
+            return ""
+        name = "atrim" if audio else "trim"
+        return f"{name}={':'.join(bits)},"
+
     parts: list[str] = []
     for i in range(n):
+        ts, te = trims[i]
         parts.append(
-            f"[{i}:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p,"
-            f"setpts=PTS-STARTPTS[v{i}];"
+            f"[{i}:v]"
+            f"{_trim_clause(ts, te, audio=False)}"
+            f"setpts=PTS-STARTPTS,"
+            f"scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p"
+            f"[v{i}];"
         )
         parts.append(
-            f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:"
-            f"channel_layouts=stereo,aresample=async=1,asetpts=PTS-STARTPTS[a{i}];"
+            f"[{i}:a]"
+            f"{_trim_clause(ts, te, audio=True)}"
+            f"asetpts=PTS-STARTPTS,"
+            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+            f"aresample=async=1"
+            f"[a{i}];"
         )
     chain = "".join(f"[v{i}][a{i}]" for i in range(n))
     filter_str = "".join(parts) + f"{chain}concat=n={n}:v=1:a=1[v][a]"
@@ -1131,12 +1176,13 @@ async def combine_library_entries(
     payload: CombineLibraryRequest,
     user: auth.User = Depends(get_current_user),
 ) -> ProcessResponse:
-    """Concatenate several library entries (in the given order) into a new
-    routine owned by the requesting user.
+    """Concatenate several library entries into a new routine owned by the
+    requesting user, **preserving each source's segment markers** so the
+    user's curated splits carry over (offset by cumulative clip duration).
 
-    Each entry must be one the user can access — either owned or shared with
-    them. We don't disturb the original entries; the combined output is a
-    fresh library entry under the requester's account.
+    No pose extraction or re-segmentation runs — combining is purely an
+    ffmpeg concat plus a segment-stitching operation. This is fast (no
+    multi-minute MediaPipe pass) and respects the user's existing edits.
     """
     if len(payload.video_ids) < 2:
         raise HTTPException(
@@ -1147,59 +1193,139 @@ async def combine_library_entries(
             status_code=400, detail="At most 8 videos can be combined at once."
         )
 
-    # Resolve each video_id to an absolute MP4 path. Owner's downloads dir is
-    # where the canonical file lives, whether the user owns or is shared on it.
-    titles: list[str] = []
-    source_paths: list[Path] = []
+    # 1. Resolve every video_id to its file path + cached segments, and
+    #    probe each clip's actual duration so segment offsets align tightly.
+    sources: list[dict] = []
     for vid in payload.video_ids:
         owner_id, _perm = resolve_entry_access(user.id, vid)
         owner_lib = _read_library(owner_id)
         entry = next((i for i in owner_lib if i.get("video_id") == vid), None)
         if not entry:
             raise HTTPException(status_code=404, detail=f"Unknown video: {vid}")
+
         filename = entry.get("video_url", "").split("/")[-1]
-        if not filename:
-            raise HTTPException(
-                status_code=500, detail=f"Missing video file for {vid}"
-            )
-        path = user_downloads_dir(owner_id) / filename
-        if not path.is_file():
+        path = user_downloads_dir(owner_id) / filename if filename else None
+        if not path or not path.is_file():
             raise HTTPException(
                 status_code=410,
                 detail=f"Video file for '{entry.get('title', vid)}' is no longer on disk.",
             )
-        source_paths.append(path)
-        titles.append(entry.get("title") or vid)
 
+        seg_path = user_data_dir(owner_id) / f"{vid}.json"
+        try:
+            segments = json.loads(seg_path.read_text()) if seg_path.exists() else []
+        except json.JSONDecodeError:
+            segments = []
+
+        sources.append(
+            {
+                "path": path,
+                "title": entry.get("title") or vid,
+                "segments": segments,
+                "duration": entry.get("duration") or 0.0,
+                "crop_start": entry.get("crop_start"),
+                "crop_end": entry.get("crop_end"),
+            }
+        )
+
+    # 2. ffmpeg concat into a new MP4 owned by the requesting user.
+    #    Pass each source's crop window as a trim — only the cropped portion
+    #    of each clip ends up in the combined output.
     user_dl = user_downloads_dir(user.id)
     video_id = f"combined-{uuid.uuid4().hex[:10]}"
     dest = user_dl / f"{video_id}.mp4"
-
+    trims: list[tuple[Optional[float], Optional[float]]] = [
+        (s["crop_start"], s["crop_end"]) for s in sources
+    ]
     try:
-        await asyncio.to_thread(_concat_videos, source_paths, dest)
+        await asyncio.to_thread(
+            _concat_videos, [s["path"] for s in sources], dest, trims
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Combine failed: {e}")
 
-    # Use a friendly default title; user can rename via the existing ✎.
-    combined_title = " + ".join(titles)[:200]
+    # 3. Stitch segments. Each source's segments are stored at absolute
+    #    timestamps within the *original* clip. After trimming away the
+    #    leading crop_start seconds and placing the trimmed clip at the
+    #    current cumulative offset, every segment timestamp shifts by
+    #    (-crop_start + cumulative).
+    probed_total = 0.0
+    cumulative = 0.0
+    combined_segments: list[dict] = []
+    for src in sources:
+        crop_start = float(src["crop_start"]) if src["crop_start"] is not None else 0.0
+        crop_end = src["crop_end"]
+        # Trimmed-clip duration: prefer the explicit crop window, fall back
+        # to the cached full-clip duration if no crop is set.
+        if crop_end is not None:
+            trimmed_dur = float(crop_end) - crop_start
+        else:
+            trimmed_dur = float(src["duration"]) - crop_start
 
-    try:
-        return await asyncio.to_thread(
-            _run_file_pipeline,
-            user.id,
-            dest,
-            payload.model_variant,
-            1,        # sample_every_n_frames default
-            4.0,      # min_segment_duration default
-            8.0,      # max_segment_duration default
-            15.0,     # low_velocity_percentile default
-            5,        # smooth_window default
-            None,
-            None,
-            combined_title,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+        for s in src["segments"]:
+            new_start = round(float(s["start"]) - crop_start + cumulative, 2)
+            new_end = round(float(s["end"]) - crop_start + cumulative, 2)
+            # Skip anything that falls outside this clip's window in the
+            # combined timeline.
+            if new_end <= cumulative or new_start >= cumulative + trimmed_dur:
+                continue
+            # Clamp to the cropped clip's boundaries.
+            new_start = max(cumulative, new_start)
+            new_end = min(cumulative + trimmed_dur, new_end)
+            combined_segments.append(
+                {
+                    "id": 0,
+                    "label": s.get("label") or "Segment",
+                    "start": new_start,
+                    "end": new_end,
+                }
+            )
+        cumulative += trimmed_dur
+        probed_total += trimmed_dur
+
+    # Re-probe the actual file duration to catch tiny drift from fps
+    # normalization (uses precise, may differ from sum by milliseconds).
+    precise = await asyncio.to_thread(_probe_duration, dest)
+    if precise and precise > 0:
+        probed_total = precise
+
+    # Drop any segment that extends past the real duration (defensive).
+    combined_segments = [
+        s for s in combined_segments if s["end"] <= probed_total + 0.5
+    ]
+    for i, s in enumerate(combined_segments, start=1):
+        s["id"] = i
+
+    # 4. Persist the stitched segments + library entry. No pose extraction.
+    user_data = user_data_dir(user.id)
+    (user_data / f"{video_id}.json").write_text(
+        json.dumps(combined_segments, indent=2)
+    )
+    (user_data / "sequence.json").write_text(
+        json.dumps(combined_segments, indent=2)
+    )
+
+    combined_title = " + ".join(s["title"] for s in sources)[:200]
+    video_url = f"/videos/{user.id}/{dest.name}"
+    _record_library_entry(
+        user_id=user.id,
+        video_id=video_id,
+        video_url=video_url,
+        title=combined_title,
+        duration=probed_total,
+        segment_count=len(combined_segments),
+        source="upload",
+        crop_start=None,
+        crop_end=None,
+    )
+
+    return ProcessResponse(
+        video_id=video_id,
+        video_url=video_url,
+        duration=probed_total,
+        segment_count=len(combined_segments),
+        segments=combined_segments,
+    )
 
 
 @app.delete("/api/library/{video_id}")
