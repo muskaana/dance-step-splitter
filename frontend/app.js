@@ -4,6 +4,9 @@ const video = document.getElementById("player");
 const segmentGrid = document.getElementById("segment-grid");
 const segmentCount = document.getElementById("segment-count");
 const mirrorBtn = document.getElementById("mirror-btn");
+const memoryBtn = document.getElementById("memory-btn");
+const memoryState = document.getElementById("memory-state");
+const memoryOverlay = document.getElementById("memory-overlay");
 const mirrorState = document.getElementById("mirror-state");
 const speedControls = document.getElementById("speed-controls");
 const loopBreakInput = document.getElementById("loop-break");
@@ -880,6 +883,18 @@ mirrorBtn.addEventListener("click", () => {
   mirrorState.textContent = isMirrored ? "On" : "Off";
   mirrorBtn.classList.toggle("bg-indigo-50", isMirrored);
   mirrorBtn.classList.toggle("border-indigo-300", isMirrored);
+});
+
+memoryBtn.addEventListener("click", () => {
+  // `invisible` (visibility:hidden) keeps audio playing while making the
+  // video element invisible — exactly what we want for an audio-only
+  // memory drill.
+  const on = video.classList.toggle("invisible");
+  memoryState.textContent = on ? "On" : "Off";
+  memoryBtn.classList.toggle("bg-indigo-50", on);
+  memoryBtn.classList.toggle("border-indigo-300", on);
+  memoryOverlay.classList.toggle("hidden", !on);
+  memoryOverlay.classList.toggle("flex", on);
 });
 
 workshopBtn.addEventListener("click", () => {

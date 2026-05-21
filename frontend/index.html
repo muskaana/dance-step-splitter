@@ -601,6 +601,22 @@
               controls
               playsinline
             ></video>
+
+            <!-- Shown over the (invisible) video when Memory Mode is on so
+                 the user knows audio is still streaming through. -->
+            <div
+              id="memory-overlay"
+              class="hidden absolute inset-0 z-[5] items-center justify-center pointer-events-none"
+            >
+              <div class="text-center">
+                <div class="text-slate-300 text-xs uppercase tracking-[0.2em] font-semibold">
+                  Memory Mode
+                </div>
+                <div class="text-slate-500 text-[10px] mt-1 uppercase tracking-wider">
+                  audio only · practice from memory
+                </div>
+              </div>
+            </div>
             <div
               id="empty-state"
               class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-900 text-slate-300"
@@ -671,6 +687,14 @@
               class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
             >
               Mirror Mode: <span id="mirror-state">Off</span>
+            </button>
+
+            <button
+              id="memory-btn"
+              class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              title="Hide the video and practice from audio alone"
+            >
+              Memory Mode: <span id="memory-state">Off</span>
             </button>
 
             <button
