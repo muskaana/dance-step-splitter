@@ -618,6 +618,10 @@ def _concat_videos(
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         msg = (result.stderr or "").strip().splitlines()[-3:]
+        # Log the full command so we can reproduce / inspect when issues come
+        # up. Truncated to stay under Fly log line limits.
+        print(f"[concat] failed cmd: {' '.join(cmd)[:1200]}")
+        print(f"[concat] stderr tail: {' | '.join(msg)}")
         raise RuntimeError("ffmpeg concat failed: " + " | ".join(msg))
 
 
@@ -1228,14 +1232,45 @@ async def combine_library_entries(
             }
         )
 
-    # 2. ffmpeg concat into a new MP4 owned by the requesting user.
-    #    Pass each source's crop window as a trim — only the cropped portion
-    #    of each clip ends up in the combined output.
+    # 2. Probe each source's actual file duration so we can sanity-check
+    #    trim windows. Stored crop_end values can drift slightly past the
+    #    real file length (fps normalization, manual edits) and ffmpeg's
+    #    trim filter will then yield 0 frames, killing the encoder.
+    for src in sources:
+        precise = await asyncio.to_thread(_probe_duration, src["path"])
+        src["probed_duration"] = (
+            precise if precise and precise > 0 else float(src["duration"] or 0)
+        )
+
+    def _sanitized_trim(src: dict) -> tuple[Optional[float], Optional[float]]:
+        cs = src.get("crop_start")
+        ce = src.get("crop_end")
+        dur = src.get("probed_duration") or 0
+        if cs is not None:
+            cs = max(0.0, float(cs))
+            if dur and cs >= dur:
+                # Crop start is past EOF — skip the trim entirely rather
+                # than feeding ffmpeg an empty window.
+                return (None, None)
+        if ce is not None:
+            ce = float(ce)
+            if dur:
+                # Clamp end to slightly inside EOF; trim's `end` is the first
+                # frame to drop, so we want it within actual frames.
+                ce = min(ce, dur - 0.05)
+            if cs is not None and ce <= cs:
+                return (None, None)
+            if ce <= 0:
+                return (None, None)
+        # Also covers the case where both are None — no trim applied.
+        return (cs, ce)
+
+    # 3. ffmpeg concat into a new MP4 owned by the requesting user.
     user_dl = user_downloads_dir(user.id)
     video_id = f"combined-{uuid.uuid4().hex[:10]}"
     dest = user_dl / f"{video_id}.mp4"
     trims: list[tuple[Optional[float], Optional[float]]] = [
-        (s["crop_start"], s["crop_end"]) for s in sources
+        _sanitized_trim(s) for s in sources
     ]
     try:
         await asyncio.to_thread(
@@ -1244,23 +1279,21 @@ async def combine_library_entries(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Combine failed: {e}")
 
-    # 3. Stitch segments. Each source's segments are stored at absolute
+    # 4. Stitch segments. Each source's segments are stored at absolute
     #    timestamps within the *original* clip. After trimming away the
     #    leading crop_start seconds and placing the trimmed clip at the
     #    current cumulative offset, every segment timestamp shifts by
-    #    (-crop_start + cumulative).
+    #    (-crop_start + cumulative). Use the same sanitized trims that
+    #    ffmpeg actually applied.
     probed_total = 0.0
     cumulative = 0.0
     combined_segments: list[dict] = []
-    for src in sources:
-        crop_start = float(src["crop_start"]) if src["crop_start"] is not None else 0.0
-        crop_end = src["crop_end"]
-        # Trimmed-clip duration: prefer the explicit crop window, fall back
-        # to the cached full-clip duration if no crop is set.
-        if crop_end is not None:
-            trimmed_dur = float(crop_end) - crop_start
+    for src, (eff_cs, eff_ce) in zip(sources, trims):
+        crop_start = float(eff_cs) if eff_cs is not None else 0.0
+        if eff_ce is not None:
+            trimmed_dur = float(eff_ce) - crop_start
         else:
-            trimmed_dur = float(src["duration"]) - crop_start
+            trimmed_dur = float(src.get("probed_duration") or src["duration"]) - crop_start
 
         for s in src["segments"]:
             new_start = round(float(s["start"]) - crop_start + cumulative, 2)
