@@ -6,6 +6,7 @@ const segmentCount = document.getElementById("segment-count");
 const mirrorBtn = document.getElementById("mirror-btn");
 const mirrorState = document.getElementById("mirror-state");
 const speedControls = document.getElementById("speed-controls");
+const loopBreakInput = document.getElementById("loop-break");
 const videoFileInput = document.getElementById("video-file");
 
 const workshopBtn = document.getElementById("workshop-btn");
@@ -357,6 +358,7 @@ document.addEventListener("click", (e) => {
 restartSegmentBtn.addEventListener("click", () => {
   // loopBounds is set whenever a segment / combination / workshop phase is
   // active — jump to its start. Otherwise rewind the video to 0.
+  cancelLoopBreak();
   const target = loopBounds ? loopBounds.start : 0;
   try {
     video.currentTime = target;
@@ -384,6 +386,7 @@ function clearSelection() {
   document
     .querySelectorAll(".segment-btn.active")
     .forEach((b) => b.classList.remove("active"));
+  cancelLoopBreak();
   onManualSelectionChanged();
 }
 
@@ -485,6 +488,7 @@ function startWorkshop() {
 }
 
 function stopWorkshop() {
+  cancelLoopBreak();
   workshop.active = false;
   workshop.plan = [];
   workshop.phaseIdx = 0;
@@ -782,27 +786,81 @@ function resetCountBeat() {
 /* Looping playback — the single source of truth for loop snap-back  */
 /* ---------------------------------------------------------------- */
 
-video.addEventListener("timeupdate", () => {
-  if (!loopBounds) return;
-  if (video.currentTime >= loopBounds.end - LOOP_EPS) {
+let loopBreakTimer = null;
+
+function cancelLoopBreak() {
+  if (loopBreakTimer) {
+    clearTimeout(loopBreakTimer);
+    loopBreakTimer = null;
+  }
+}
+
+function currentLoopBreakSeconds() {
+  const v = parseFloat(loopBreakInput.value);
+  if (!isFinite(v) || v < 0) return 0;
+  return Math.min(v, 30);
+}
+
+/** Snap the playhead back to the loop start, respecting the user-configured
+    break delay. During the break we pause the video; after the timeout
+    elapses we resume playback. */
+function snapLoopBack(afterMs) {
+  if (afterMs <= 0) {
     video.currentTime = loopBounds.start;
     resetCountBeat();
+    if (video.paused) video.play().catch(() => {});
+    return;
+  }
+  video.pause();
+  loopBreakTimer = setTimeout(() => {
+    loopBreakTimer = null;
+    // Loop bounds may have changed during the break (user cleared / picked
+    // a different segment / workshop stopped) — bail out cleanly.
+    if (!loopBounds) return;
+    video.currentTime = loopBounds.start;
+    resetCountBeat();
+    video.play().catch(() => {});
+  }, afterMs);
+}
+
+video.addEventListener("timeupdate", () => {
+  if (!loopBounds) return;
+  if (loopBreakTimer) return; // already in a break, ignore further fires
+  if (video.currentTime >= loopBounds.end - LOOP_EPS) {
+    const breakMs = currentLoopBreakSeconds() * 1000;
 
     if (workshop.active) {
-      // Each wrap = one completed rep.
+      // Decrement the rep counter immediately — the rep just finished even
+      // if we're about to pause for the break.
       workshop.repsRemaining -= 1;
       workshopRepsEl.textContent = String(Math.max(0, workshop.repsRemaining));
       workshopRepsEl.classList.remove("rep-pulse");
-      // Force reflow so the animation restarts.
       void workshopRepsEl.offsetWidth;
       workshopRepsEl.classList.add("rep-pulse");
 
       if (workshop.repsRemaining <= 0) {
-        enterPhase(workshop.phaseIdx + 1);
+        // Phase done — break, then advance. `enterPhase` itself starts
+        // playback at the new phase's start.
+        if (breakMs > 0) {
+          video.pause();
+          loopBreakTimer = setTimeout(() => {
+            loopBreakTimer = null;
+            enterPhase(workshop.phaseIdx + 1);
+          }, breakMs);
+        } else {
+          enterPhase(workshop.phaseIdx + 1);
+        }
+        return;
       }
     }
+
+    snapLoopBack(breakMs);
   }
 });
+
+// Any state change that invalidates the current loop should also abort an
+// in-flight break.
+video.addEventListener("seeking", cancelLoopBreak);
 
 /* ---------------------------------------------------------------- */
 /* Speed + mirror + workshop button wiring                           */
