@@ -7,6 +7,10 @@ const mirrorBtn = document.getElementById("mirror-btn");
 const memoryBtn = document.getElementById("memory-btn");
 const memoryState = document.getElementById("memory-state");
 const memoryOverlay = document.getElementById("memory-overlay");
+const memoryControls = document.getElementById("memory-controls");
+const memoryPlayBtn = document.getElementById("memory-play-btn");
+const memorySeek = document.getElementById("memory-seek");
+const memoryTime = document.getElementById("memory-time");
 const mirrorState = document.getElementById("mirror-state");
 const speedControls = document.getElementById("speed-controls");
 const loopBreakInput = document.getElementById("loop-break");
@@ -885,16 +889,60 @@ mirrorBtn.addEventListener("click", () => {
   mirrorBtn.classList.toggle("border-indigo-300", isMirrored);
 });
 
+function formatClock(s) {
+  if (!isFinite(s) || s < 0) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+function updateMemoryControls() {
+  if (memoryControls.classList.contains("hidden")) return;
+  const dur = isFinite(video.duration) ? video.duration : 0;
+  memorySeek.max = String(dur);
+  // Only push the value when the user isn't currently dragging the slider,
+  // so their drag doesn't fight the live update.
+  if (document.activeElement !== memorySeek) {
+    memorySeek.value = String(video.currentTime || 0);
+  }
+  memoryTime.textContent = `${formatClock(video.currentTime)} / ${formatClock(dur)}`;
+  memoryPlayBtn.textContent = video.paused ? "▶" : "❚❚";
+}
+
+video.addEventListener("timeupdate", updateMemoryControls);
+video.addEventListener("loadedmetadata", updateMemoryControls);
+video.addEventListener("play", updateMemoryControls);
+video.addEventListener("pause", updateMemoryControls);
+
+memoryPlayBtn.addEventListener("click", () => {
+  if (video.paused) video.play().catch(() => {});
+  else video.pause();
+});
+
+memorySeek.addEventListener("input", () => {
+  const v = parseFloat(memorySeek.value);
+  if (isFinite(v)) {
+    // User scrubbing should also abort any in-flight loop break so the next
+    // wrap counts cleanly from the new position.
+    cancelLoopBreak();
+    video.currentTime = v;
+  }
+});
+
 memoryBtn.addEventListener("click", () => {
   // `invisible` (visibility:hidden) keeps audio playing while making the
   // video element invisible — exactly what we want for an audio-only
-  // memory drill.
+  // memory drill. We then surface our own minimal controls bar so the user
+  // still has play/pause + scrub.
   const on = video.classList.toggle("invisible");
   memoryState.textContent = on ? "On" : "Off";
   memoryBtn.classList.toggle("bg-indigo-50", on);
   memoryBtn.classList.toggle("border-indigo-300", on);
   memoryOverlay.classList.toggle("hidden", !on);
   memoryOverlay.classList.toggle("flex", on);
+  memoryControls.classList.toggle("hidden", !on);
+  memoryControls.classList.toggle("flex", on);
+  if (on) updateMemoryControls();
 });
 
 workshopBtn.addEventListener("click", () => {

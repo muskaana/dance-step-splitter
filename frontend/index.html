@@ -617,6 +617,30 @@
                 </div>
               </div>
             </div>
+
+            <!-- Custom playback bar shown only in Memory Mode (native controls
+                 vanish when the video is hidden, so we synthesize the basics). -->
+            <div
+              id="memory-controls"
+              class="hidden absolute left-0 right-0 bottom-0 z-[6] px-3 py-2 bg-black/85 backdrop-blur items-center gap-2 text-white"
+            >
+              <button
+                id="memory-play-btn"
+                type="button"
+                class="text-base leading-none w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/10"
+                title="Play / pause"
+              >▶</button>
+              <input
+                id="memory-seek"
+                type="range"
+                min="0"
+                max="100"
+                step="0.01"
+                value="0"
+                class="flex-1 accent-indigo-500"
+              />
+              <span id="memory-time" class="text-xs font-mono tabular-nums whitespace-nowrap">0:00 / 0:00</span>
+            </div>
             <div
               id="empty-state"
               class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-900 text-slate-300"
