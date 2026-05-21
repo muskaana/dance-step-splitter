@@ -529,26 +529,70 @@ def _has_audio_stream(path: Path) -> bool:
         return False
 
 
+def _normalize_clip(
+    input_path: Path,
+    output_path: Path,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+) -> None:
+    """Re-encode `input_path` into a known-good MP4 (H.264 yuv420p 30 fps,
+    AAC 44.1 kHz stereo). Optionally trims via -ss/-to input seeking, which
+    is more reliable than ffmpeg's `trim` filter for small clips.
+
+    The result is a clip safe to stream-copy concat with other normalized
+    clips — every output has identical codec/format parameters.
+    """
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    # Input seeking (-ss before -i) is fast and "close enough" frame accurate
+    # for our use; we don't need single-frame precision on dance clips.
+    if start is not None and start > 0:
+        cmd.extend(["-ss", f"{start:.3f}"])
+    if end is not None and end > 0:
+        cmd.extend(["-to", f"{end:.3f}"])
+    cmd.extend(["-i", str(input_path)])
+
+    cmd.extend(
+        [
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p",
+            "-af", "aresample=async=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+    )
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        msg = (result.stderr or "").strip().splitlines()[-3:]
+        print(f"[normalize] failed cmd: {' '.join(cmd)[:1200]}")
+        print(f"[normalize] stderr tail: {' | '.join(msg)}")
+        raise RuntimeError(
+            f"Normalizing {input_path.name} failed: " + " | ".join(msg)
+        )
+
+
 def _concat_videos(
     input_paths: list[Path],
     output_path: Path,
     trims: Optional[list[tuple[Optional[float], Optional[float]]]] = None,
 ) -> None:
-    """Concatenate N videos into one MP4 in a single ffmpeg pass.
+    """Concatenate N videos into one MP4.
 
-    Optional per-input trim: `trims[i]` is a `(start, end)` pair in seconds,
-    either bound may be `None` for "no trim on this end". This lets callers
-    apply each source's crop_start / crop_end while concatenating, so the
-    output only contains the meaningful portion of each clip.
+    Two-pass approach: each input is independently re-encoded into a
+    normalized intermediate (correct codec, format, frame rate, audio
+    params, optionally trimmed). The intermediates are then concat-demuxed
+    with `-c copy` — fast, stream-only, and rock-solid because every input
+    is now known to have identical parameters.
 
-    Each input's audio is normalized to 44.1 kHz stereo via `aformat` so the
-    concat filter doesn't choke on mismatched sample rates / channel layouts.
+    This is more reliable than a single-pass filter graph: any failure
+    localizes to one clip's normalization step, where the error message
+    tells you exactly which file was the problem instead of a cryptic
+    `-22` from libx264 with no input identification.
 
-    Uses `ultrafast` preset — the output is fine for playback and follow-on
-    pose extraction, and slower presets cost CPU we don't have on Fly's
-    shared instance.
-
-    Requires every input to have an audio track.
+    Optional per-input trim: `trims[i] = (start, end)` in seconds; either
+    bound may be `None`.
     """
     if not input_paths:
         raise ValueError("No input videos to concatenate")
@@ -565,64 +609,42 @@ def _concat_videos(
             + ". Re-record with sound or add a silent track via an external tool."
         )
 
-    n = len(input_paths)
-    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    for p in input_paths:
-        cmd.extend(["-i", str(p)])
+    work_dir = output_path.parent / f".concat-{uuid.uuid4().hex[:8]}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    normalized: list[Path] = []
 
-    def _trim_clause(start: Optional[float], end: Optional[float], audio: bool) -> str:
-        bits: list[str] = []
-        if start is not None:
-            bits.append(f"start={start:.3f}")
-        if end is not None:
-            bits.append(f"end={end:.3f}")
-        if not bits:
-            return ""
-        name = "atrim" if audio else "trim"
-        return f"{name}={':'.join(bits)},"
+    try:
+        for i, (src, (ts, te)) in enumerate(zip(input_paths, trims)):
+            norm = work_dir / f"norm_{i:02d}.mp4"
+            _normalize_clip(src, norm, ts, te)
+            normalized.append(norm)
 
-    parts: list[str] = []
-    for i in range(n):
-        ts, te = trims[i]
-        parts.append(
-            f"[{i}:v]"
-            f"{_trim_clause(ts, te, audio=False)}"
-            f"setpts=PTS-STARTPTS,"
-            f"scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p"
-            f"[v{i}];"
+        manifest = work_dir / "concat.txt"
+        manifest.write_text(
+            "\n".join(f"file '{p.as_posix()}'" for p in normalized) + "\n"
         )
-        parts.append(
-            f"[{i}:a]"
-            f"{_trim_clause(ts, te, audio=True)}"
-            f"asetpts=PTS-STARTPTS,"
-            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
-            f"aresample=async=1"
-            f"[a{i}];"
-        )
-    chain = "".join(f"[v{i}][a{i}]" for i in range(n))
-    filter_str = "".join(parts) + f"{chain}concat=n={n}:v=1:a=1[v][a]"
 
-    cmd.extend(
-        [
-            "-filter_complex", filter_str,
-            "-map", "[v]",
-            "-map", "[a]",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(manifest),
+            "-c", "copy",
             "-movflags", "+faststart",
             str(output_path),
         ]
-    )
-
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        msg = (result.stderr or "").strip().splitlines()[-3:]
-        # Log the full command so we can reproduce / inspect when issues come
-        # up. Truncated to stay under Fly log line limits.
-        print(f"[concat] failed cmd: {' '.join(cmd)[:1200]}")
-        print(f"[concat] stderr tail: {' | '.join(msg)}")
-        raise RuntimeError("ffmpeg concat failed: " + " | ".join(msg))
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            msg = (result.stderr or "").strip().splitlines()[-3:]
+            print(f"[concat] failed cmd: {' '.join(cmd)[:1200]}")
+            print(f"[concat] stderr tail: {' | '.join(msg)}")
+            raise RuntimeError("ffmpeg concat failed: " + " | ".join(msg))
+    finally:
+        for p in normalized:
+            p.unlink(missing_ok=True)
+        (work_dir / "concat.txt").unlink(missing_ok=True)
+        try:
+            work_dir.rmdir()
+        except OSError:
+            pass
 
 
 @app.post("/api/process-files", response_model=ProcessResponse)
@@ -1232,104 +1254,100 @@ async def combine_library_entries(
             }
         )
 
-    # 2. Probe each source's actual file duration so we can sanity-check
-    #    trim windows. Stored crop_end values can drift slightly past the
-    #    real file length (fps normalization, manual edits) and ffmpeg's
-    #    trim filter will then yield 0 frames, killing the encoder.
-    for src in sources:
-        precise = await asyncio.to_thread(_probe_duration, src["path"])
-        src["probed_duration"] = (
-            precise if precise and precise > 0 else float(src["duration"] or 0)
+    # Validate that we actually have segments to splice.
+    if all(not s["segments"] for s in sources):
+        raise HTTPException(
+            status_code=400,
+            detail="None of the chosen videos have segments yet. Process them first.",
         )
 
-    def _sanitized_trim(src: dict) -> tuple[Optional[float], Optional[float]]:
-        cs = src.get("crop_start")
-        ce = src.get("crop_end")
-        dur = src.get("probed_duration") or 0
-        if cs is not None:
-            cs = max(0.0, float(cs))
-            if dur and cs >= dur:
-                # Crop start is past EOF — skip the trim entirely rather
-                # than feeding ffmpeg an empty window.
-                return (None, None)
-        if ce is not None:
-            ce = float(ce)
-            if dur:
-                # Clamp end to slightly inside EOF; trim's `end` is the first
-                # frame to drop, so we want it within actual frames.
-                ce = min(ce, dur - 0.05)
-            if cs is not None and ce <= cs:
-                return (None, None)
-            if ce <= 0:
-                return (None, None)
-        # Also covers the case where both are None — no trim applied.
-        return (cs, ce)
-
-    # 3. ffmpeg concat into a new MP4 owned by the requesting user.
+    # 2. Extract each segment as its own normalized clip, then concat them.
+    #    This sidesteps every crop / trim-filter pitfall: we're just splicing
+    #    standalone clips, not trimming inside a complex filter graph.
     user_dl = user_downloads_dir(user.id)
     video_id = f"combined-{uuid.uuid4().hex[:10]}"
     dest = user_dl / f"{video_id}.mp4"
-    trims: list[tuple[Optional[float], Optional[float]]] = [
-        _sanitized_trim(s) for s in sources
-    ]
-    try:
-        await asyncio.to_thread(
-            _concat_videos, [s["path"] for s in sources], dest, trims
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Combine failed: {e}")
 
-    # 4. Stitch segments. Each source's segments are stored at absolute
-    #    timestamps within the *original* clip. After trimming away the
-    #    leading crop_start seconds and placing the trimmed clip at the
-    #    current cumulative offset, every segment timestamp shifts by
-    #    (-crop_start + cumulative). Use the same sanitized trims that
-    #    ffmpeg actually applied.
-    probed_total = 0.0
-    cumulative = 0.0
+    work_dir = user_dl / f".combine-{uuid.uuid4().hex[:8]}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    segment_clips: list[Path] = []
     combined_segments: list[dict] = []
-    for src, (eff_cs, eff_ce) in zip(sources, trims):
-        crop_start = float(eff_cs) if eff_cs is not None else 0.0
-        if eff_ce is not None:
-            trimmed_dur = float(eff_ce) - crop_start
-        else:
-            trimmed_dur = float(src.get("probed_duration") or src["duration"]) - crop_start
+    cumulative = 0.0
 
-        for s in src["segments"]:
-            new_start = round(float(s["start"]) - crop_start + cumulative, 2)
-            new_end = round(float(s["end"]) - crop_start + cumulative, 2)
-            # Skip anything that falls outside this clip's window in the
-            # combined timeline.
-            if new_end <= cumulative or new_start >= cumulative + trimmed_dur:
-                continue
-            # Clamp to the cropped clip's boundaries.
-            new_start = max(cumulative, new_start)
-            new_end = min(cumulative + trimmed_dur, new_end)
-            combined_segments.append(
-                {
-                    "id": 0,
-                    "label": s.get("label") or "Segment",
-                    "start": new_start,
-                    "end": new_end,
-                }
+    try:
+        for src in sources:
+            for seg in src["segments"]:
+                seg_start = float(seg["start"])
+                seg_end = float(seg["end"])
+                if seg_end <= seg_start:
+                    continue
+                seg_duration = seg_end - seg_start
+
+                clip_path = work_dir / f"seg_{len(segment_clips):03d}.mp4"
+                try:
+                    await asyncio.to_thread(
+                        _normalize_clip, src["path"], clip_path, seg_start, seg_end
+                    )
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"Failed extracting segment '{seg.get('label', '?')}' "
+                            f"from '{src['title']}': {e}"
+                        ),
+                    )
+                segment_clips.append(clip_path)
+
+                combined_segments.append(
+                    {
+                        "id": len(combined_segments) + 1,
+                        "label": seg.get("label") or "Segment",
+                        "start": round(cumulative, 2),
+                        "end": round(cumulative + seg_duration, 2),
+                    }
+                )
+                cumulative += seg_duration
+
+        if not segment_clips:
+            raise HTTPException(
+                status_code=400, detail="No usable segments found in the selected videos."
             )
-        cumulative += trimmed_dur
-        probed_total += trimmed_dur
 
-    # Re-probe the actual file duration to catch tiny drift from fps
-    # normalization (uses precise, may differ from sum by milliseconds).
+        # Concat-demux the segment clips. All have identical codec/format
+        # thanks to _normalize_clip, so `-c copy` works flawlessly.
+        manifest = work_dir / "concat.txt"
+        manifest.write_text(
+            "\n".join(f"file '{p.as_posix()}'" for p in segment_clips) + "\n"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(manifest),
+            "-c", "copy",
+            "-movflags", "+faststart",
+            str(dest),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            msg = (result.stderr or "").strip().splitlines()[-3:]
+            print(f"[combine] concat failed: {' | '.join(msg)}")
+            raise HTTPException(
+                status_code=500, detail="ffmpeg concat failed: " + " | ".join(msg)
+            )
+    finally:
+        for p in segment_clips:
+            p.unlink(missing_ok=True)
+        try:
+            (work_dir / "concat.txt").unlink(missing_ok=True)
+            work_dir.rmdir()
+        except OSError:
+            pass
+
+    # 3. Probe actual output duration for the library record.
     precise = await asyncio.to_thread(_probe_duration, dest)
-    if precise and precise > 0:
-        probed_total = precise
+    total_duration = precise if precise and precise > 0 else cumulative
 
-    # Drop any segment that extends past the real duration (defensive).
-    combined_segments = [
-        s for s in combined_segments if s["end"] <= probed_total + 0.5
-    ]
-    for i, s in enumerate(combined_segments, start=1):
-        s["id"] = i
-
-    # 4. Persist the stitched segments + library entry. No pose extraction.
+    # 4. Persist segments + library entry. No pose extraction needed.
     user_data = user_data_dir(user.id)
     (user_data / f"{video_id}.json").write_text(
         json.dumps(combined_segments, indent=2)
@@ -1345,7 +1363,7 @@ async def combine_library_entries(
         video_id=video_id,
         video_url=video_url,
         title=combined_title,
-        duration=probed_total,
+        duration=total_duration,
         segment_count=len(combined_segments),
         source="upload",
         crop_start=None,
@@ -1355,7 +1373,7 @@ async def combine_library_entries(
     return ProcessResponse(
         video_id=video_id,
         video_url=video_url,
-        duration=probed_total,
+        duration=total_duration,
         segment_count=len(combined_segments),
         segments=combined_segments,
     )
