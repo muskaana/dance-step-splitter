@@ -14,6 +14,17 @@ const memoryTime = document.getElementById("memory-time");
 const webcamBtn = document.getElementById("webcam-btn");
 const webcamState = document.getElementById("webcam-state");
 const webcamVideo = document.getElementById("webcam-video");
+const recordBtn = document.getElementById("record-btn");
+const recordState = document.getElementById("record-state");
+const recordDot = document.getElementById("record-dot");
+
+const compareModal = document.getElementById("compare-modal");
+const compareClose = document.getElementById("compare-close");
+const compareSource = document.getElementById("compare-source");
+const compareRecording = document.getElementById("compare-recording");
+const comparePlay = document.getElementById("compare-play");
+const compareSeek = document.getElementById("compare-seek");
+const compareTime = document.getElementById("compare-time");
 const mirrorState = document.getElementById("mirror-state");
 const speedControls = document.getElementById("speed-controls");
 const loopBreakInput = document.getElementById("loop-break");
@@ -28,6 +39,8 @@ const prevDrillBtn = document.getElementById("prev-drill-btn");
 const nextDrillBtn = document.getElementById("next-drill-btn");
 
 const audioModeRow = document.getElementById("audio-mode");
+const stemsMode = document.getElementById("stems-mode");
+const stemAudio = document.getElementById("stem-audio");
 
 const kindToggle = document.getElementById("kind-toggle");
 const sourceToggle = document.getElementById("source-toggle");
@@ -1111,6 +1124,216 @@ if (webcamBtn) {
   });
 }
 
+/* ---------- Self-recording via MediaRecorder ---------- */
+
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordingStream = null; // separate stream if webcam wasn't already on
+
+function setRecordButtonState(on) {
+  recordState.textContent = on ? "Recording…" : "Record";
+  recordBtn.classList.toggle("bg-rose-50", on);
+  recordBtn.classList.toggle("border-rose-300", on);
+  recordDot.classList.toggle("animate-pulse", on);
+}
+
+async function startRecording() {
+  if (!currentVideoId) {
+    alert("Load a video first — recordings get attached to whatever you're practicing.");
+    return false;
+  }
+  // Reuse the webcam stream if Webcam Mirror is on; otherwise spin up our own.
+  let stream = webcamStream;
+  if (!stream) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false,
+      });
+      recordingStream = stream;
+    } catch (err) {
+      alert(
+        "Couldn't open the webcam to record: " +
+          (err && err.message ? err.message : err)
+      );
+      return false;
+    }
+  }
+
+  // Pick a mime type the browser supports. Chrome → webm, Safari → mp4.
+  const candidates = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8",
+    "video/webm",
+    "video/mp4",
+  ];
+  let mimeType = "";
+  for (const m of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) {
+      mimeType = m;
+      break;
+    }
+  }
+  recordedChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  } catch (err) {
+    alert("MediaRecorder isn't available in this browser.");
+    if (recordingStream) {
+      recordingStream.getTracks().forEach((t) => t.stop());
+      recordingStream = null;
+    }
+    return false;
+  }
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  };
+  mediaRecorder.start(1000); // chunk every 1 s
+  return true;
+}
+
+async function stopRecording() {
+  if (!mediaRecorder) return;
+  const recorder = mediaRecorder;
+  mediaRecorder = null;
+  const targetVideoId = currentVideoId;
+
+  await new Promise((resolve) => {
+    recorder.addEventListener("stop", resolve, { once: true });
+    recorder.stop();
+  });
+
+  // If we spun up our own stream just for recording, release it now.
+  if (recordingStream) {
+    recordingStream.getTracks().forEach((t) => t.stop());
+    recordingStream = null;
+  }
+
+  if (!recordedChunks.length || !targetVideoId) return;
+  const blob = new Blob(recordedChunks, {
+    type: recorder.mimeType || "video/webm",
+  });
+  const ext = (recorder.mimeType || "").includes("mp4") ? "mp4" : "webm";
+
+  startProcessingBanner(`Uploading recording (${(blob.size / 1024 / 1024).toFixed(1)} MB)…`);
+  try {
+    const form = new FormData();
+    form.append("file", blob, `recording.${ext}`);
+    form.append("parent_video_id", targetVideoId);
+    const res = await fetch("/api/recordings", { method: "POST", body: form });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    showProcessingSuccess(`Saved recording (${data.duration.toFixed(1)}s).`);
+    await refreshLibrary();
+  } catch (err) {
+    showProcessingError(`Recording upload failed: ${err.message}`);
+  }
+}
+
+recordBtn.addEventListener("click", async () => {
+  if (mediaRecorder) {
+    setRecordButtonState(false);
+    await stopRecording();
+  } else {
+    const ok = await startRecording();
+    if (ok) setRecordButtonState(true);
+  }
+});
+
+// If the user navigates away mid-recording, stop + upload to avoid losing it.
+window.addEventListener("beforeunload", () => {
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
+});
+
+/* ---------- Compare modal (source ↔ recording) ---------- */
+
+let compareSyncing = false;
+
+function fmtCompareTime(s) {
+  if (!isFinite(s) || s < 0) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+function updateCompareTimeDisplay() {
+  const t = compareSource.currentTime || 0;
+  const dur = Math.max(compareSource.duration || 0, compareRecording.duration || 0);
+  compareSeek.max = String(dur);
+  if (document.activeElement !== compareSeek) {
+    compareSeek.value = String(t);
+  }
+  compareTime.textContent = `${fmtCompareTime(t)} / ${fmtCompareTime(dur)}`;
+  comparePlay.textContent = compareSource.paused ? "▶" : "❚❚";
+}
+
+function openCompareModal(sourceUrl, recordingUrl) {
+  compareSource.src = sourceUrl;
+  compareRecording.src = recordingUrl;
+  compareModal.classList.remove("hidden");
+  compareModal.classList.add("flex");
+  compareSource.load();
+  compareRecording.load();
+  compareSource.currentTime = 0;
+  compareRecording.currentTime = 0;
+  updateCompareTimeDisplay();
+}
+
+function closeCompareModal() {
+  compareSource.pause();
+  compareRecording.pause();
+  compareSource.removeAttribute("src");
+  compareRecording.removeAttribute("src");
+  compareSource.load();
+  compareRecording.load();
+  compareModal.classList.add("hidden");
+  compareModal.classList.remove("flex");
+}
+
+compareClose.addEventListener("click", closeCompareModal);
+compareModal.addEventListener("click", (e) => {
+  if (e.target === compareModal) closeCompareModal();
+});
+
+comparePlay.addEventListener("click", () => {
+  if (compareSource.paused) {
+    compareSource.play().catch(() => {});
+    compareRecording.play().catch(() => {});
+  } else {
+    compareSource.pause();
+    compareRecording.pause();
+  }
+});
+
+compareSeek.addEventListener("input", () => {
+  const v = parseFloat(compareSeek.value);
+  if (!isFinite(v)) return;
+  compareSyncing = true;
+  compareSource.currentTime = v;
+  compareRecording.currentTime = v;
+  setTimeout(() => { compareSyncing = false; }, 100);
+});
+
+// Keep recording in step with source on play/pause.
+for (const ev of ["play", "pause", "seeked", "timeupdate"]) {
+  compareSource.addEventListener(ev, () => {
+    if (compareSyncing) return;
+    if (ev === "play") compareRecording.play().catch(() => {});
+    else if (ev === "pause") compareRecording.pause();
+    else if (ev === "seeked") {
+      compareSyncing = true;
+      compareRecording.currentTime = compareSource.currentTime;
+      setTimeout(() => { compareSyncing = false; }, 100);
+    }
+    updateCompareTimeDisplay();
+  });
+}
+
 workshopBtn.addEventListener("click", () => {
   workshop.active ? stopWorkshop() : startWorkshop();
 });
@@ -1140,6 +1363,78 @@ audioModeRow.addEventListener("click", (e) => {
   if (!btn) return;
   setAudioMode(btn.dataset.mode);
 });
+
+/* ---------- Stems / karaoke (singing mode) ---------- */
+
+let currentStem = "both"; // "both" | "vocals" | "instrumental"
+
+function setStem(which) {
+  if (!stemAudio || !stemsMode) return;
+  currentStem = which;
+  document.querySelectorAll(".stem-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.stem === which);
+  });
+
+  if (which === "both") {
+    // Original audio plays from the video element. Stop and unhook the stem.
+    stemAudio.pause();
+    stemAudio.removeAttribute("src");
+    stemAudio.load();
+    video.muted = false;
+    return;
+  }
+
+  if (!currentVideoId) return;
+  const url = `/api/library/${encodeURIComponent(currentVideoId)}/stems/${which}`;
+  stemAudio.src = url;
+  // Mute the source video; the stem track replaces its audio.
+  video.muted = true;
+  // Snap stem to current playhead and match play state.
+  stemAudio.addEventListener(
+    "loadedmetadata",
+    () => {
+      stemAudio.currentTime = video.currentTime || 0;
+      if (!video.paused) stemAudio.play().catch(() => {});
+    },
+    { once: true }
+  );
+}
+
+if (stemsMode) {
+  stemsMode.addEventListener("click", (e) => {
+    const btn = e.target.closest(".stem-btn");
+    if (!btn) return;
+    setStem(btn.dataset.stem);
+  });
+}
+
+// Keep the stem audio synced to the video element.
+let stemSyncing = false;
+video.addEventListener("play", () => {
+  if (currentStem !== "both" && stemAudio.src) {
+    stemAudio.currentTime = video.currentTime;
+    stemAudio.play().catch(() => {});
+  }
+});
+video.addEventListener("pause", () => {
+  if (currentStem !== "both") stemAudio.pause();
+});
+video.addEventListener("seeked", () => {
+  if (currentStem !== "both" && !stemSyncing) {
+    stemSyncing = true;
+    stemAudio.currentTime = video.currentTime;
+    setTimeout(() => { stemSyncing = false; }, 80);
+  }
+});
+video.addEventListener("ratechange", () => {
+  // Match playback rate so stem doesn't drift when slowed/sped.
+  try { stemAudio.playbackRate = video.playbackRate; } catch {}
+});
+
+// Reset stems when the loaded entry changes.
+const _origSetEntryKind = applyKindGating;
+// (handled implicitly via applyKindGating which the load flow already calls;
+// also reset stem to "both" on every load so we don't carry state across)
 
 /* ---------------------------------------------------------------- */
 /* Local video file picker                                           */
@@ -1490,6 +1785,7 @@ function applyProcessResponse(data) {
   // A freshly processed video is always owned by the requesting user.
   currentPermission = "owner";
   currentEntryKind = data.kind || pendingKind || "dance";
+  if (typeof setStem === "function") setStem("both");
   applyPermissionGating();
   applyKindGating();
   renderSegments(allSegments);
@@ -2039,6 +2335,9 @@ function renderLibrary() {
           Start Workshop
         </button>
       </div>
+      <button class="lib-recordings hidden mt-1.5 w-full text-[11px] text-indigo-600 hover:text-indigo-800 underline text-center">
+        View my recordings
+      </button>
     `;
     // In combine mode, the whole card toggles selection and the inner
     // buttons are inert. Otherwise the inner buttons drive the usual flows.
@@ -2139,6 +2438,33 @@ function renderLibrary() {
         openShareModal(entry);
       });
     }
+
+    // Lazy-load recordings for this entry; reveal the link if any exist.
+    // Skip recording-kind entries themselves (they're the recordings).
+    const recBtn = card.querySelector(".lib-recordings");
+    if (recBtn && entry.source !== "recording") {
+      (async () => {
+        try {
+          const res = await fetch(
+            `/api/library/${encodeURIComponent(entry.video_id)}/recordings`
+          );
+          if (!res.ok) return;
+          const recordings = await res.json();
+          if (!recordings.length) return;
+          recBtn.textContent = `View my ${recordings.length} recording${recordings.length === 1 ? "" : "s"}`;
+          recBtn.classList.remove("hidden");
+          recBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            // Pick the most recent recording (last in list).
+            const rec = recordings[recordings.length - 1];
+            openCompareModal(entry.video_url, rec.video_url);
+          });
+        } catch {
+          /* ignore */
+        }
+      })();
+    }
+
     libraryList.appendChild(card);
   }
 }
@@ -2174,6 +2500,7 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     currentVideoId = data.video_id;
     currentPermission = data.permission || "owner";
     currentEntryKind = data.kind || "dance";
+    if (typeof setStem === "function") setStem("both");
     applyPermissionGating();
     applyKindGating();
     youtubeUrlInput.value = data.source_url || "";

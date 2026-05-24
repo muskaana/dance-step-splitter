@@ -30,6 +30,10 @@
         background-color: #0f172a;
         color: white;
       }
+      .stem-btn.active {
+        background-color: #be185d;
+        color: white;
+      }
       .source-btn.active {
         background-color: #4f46e5;
         color: white;
@@ -149,6 +153,37 @@
     <style>
       .auth-tab.active { background: #0f172a; color: white; border-color: #0f172a; }
     </style>
+
+    <!-- Side-by-side compare modal — source video next to a self-recording. -->
+    <div
+      id="compare-modal"
+      class="hidden fixed inset-0 z-40 bg-slate-900/90 items-center justify-center p-4"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl max-w-5xl w-full p-4 max-h-[95vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-bold text-slate-900">Compare with recording</h2>
+          <button id="compare-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Source</div>
+            <video id="compare-source" class="w-full rounded-md bg-black aspect-video" playsinline></video>
+          </div>
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">You</div>
+            <video id="compare-recording" class="w-full rounded-md bg-black aspect-video" playsinline muted></video>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 mt-3">
+          <button id="compare-play" class="w-10 h-10 rounded-md border border-slate-300 hover:bg-slate-100 text-lg">▶</button>
+          <input id="compare-seek" type="range" min="0" max="100" step="0.01" value="0" class="flex-1 accent-indigo-500" />
+          <span id="compare-time" class="text-xs font-mono tabular-nums whitespace-nowrap">0:00 / 0:00</span>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-2">
+          Both videos play in sync. Your recording stays muted so you don't hear it on top of the source audio.
+        </p>
+      </div>
+    </div>
 
     <!-- Tutorial overlay — auto-shown for new users, re-openable via header link. -->
     <div
@@ -849,6 +884,16 @@
               </div>
             </div>
 
+            <div class="singing-only flex items-center gap-2 ml-auto">
+              <span class="text-sm font-medium text-slate-600">Stems</span>
+              <div id="stems-mode" class="inline-flex rounded-md border border-slate-300 overflow-hidden">
+                <button data-stem="both" class="stem-btn active px-3 py-1 text-sm hover:bg-slate-100">Both</button>
+                <button data-stem="vocals" class="stem-btn px-3 py-1 text-sm hover:bg-slate-100 border-l border-slate-300">Vocals</button>
+                <button data-stem="instrumental" class="stem-btn px-3 py-1 text-sm hover:bg-slate-100 border-l border-slate-300">Karaoke</button>
+              </div>
+              <audio id="stem-audio" preload="auto" class="hidden"></audio>
+            </div>
+
             <button
               id="mirror-btn"
               class="dance-only px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
@@ -870,6 +915,15 @@
               title="Use your webcam as a mirror"
             >
               Webcam Mirror: <span id="webcam-state">Off</span>
+            </button>
+
+            <button
+              id="record-btn"
+              class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              title="Record yourself practicing — appears in this video's library card after"
+            >
+              <span id="record-dot" class="inline-block w-2 h-2 rounded-full bg-rose-500 mr-1 align-middle"></span>
+              <span id="record-state">Record</span>
             </button>
 
             <button

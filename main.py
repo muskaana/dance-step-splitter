@@ -147,6 +147,7 @@ def _record_library_entry(
     crop_start: Optional[float] = None,
     crop_end: Optional[float] = None,
     kind: str = "dance",
+    parent_video_id: Optional[str] = None,
 ) -> dict:
     """Upsert a library entry. Most-recent processing of a given video_id wins."""
     items = _read_library(user_id)
@@ -165,6 +166,7 @@ def _record_library_entry(
         "crop_start": crop_start,
         "crop_end": crop_end,
         "kind": kind,
+        "parent_video_id": parent_video_id,
     }
     items.insert(0, entry)
     _write_library(user_id, items)
@@ -869,6 +871,159 @@ async def update_sequence(
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Self-recordings (practice video the user filmed of themselves)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/recordings")
+async def upload_recording(
+    file: UploadFile = File(...),
+    parent_video_id: str = Form(...),
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Save a self-recording (webm/mp4 from the user's webcam) and link it
+    to the source library entry they were practicing along to.
+
+    The recording is added to the user's library as a separate entry with
+    `kind="recording"` and `parent_video_id` pointing at the source.
+    """
+    # Confirm parent entry exists + user has access (owner or shared).
+    try:
+        resolve_entry_access(user.id, parent_video_id)
+    except HTTPException:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parent video '{parent_video_id}' not found in your library.",
+        )
+
+    suffix = Path(file.filename or "rec.webm").suffix or ".webm"
+    if suffix.lower() not in (".webm", ".mp4", ".mov", ".mkv"):
+        suffix = ".webm"
+    rec_id = f"rec-{uuid.uuid4().hex[:10]}"
+    dest = user_downloads_dir(user.id) / f"{rec_id}{suffix}"
+
+    with dest.open("wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            f.write(chunk)
+
+    # Probe duration; if it fails we still record a 0-duration entry so the
+    # upload isn't lost.
+    duration = float(_probe_duration(dest) or 0)
+
+    parent_entry = next(
+        (i for i in _read_library(user.id) if i.get("video_id") == parent_video_id),
+        None,
+    )
+    parent_title = parent_entry.get("title") if parent_entry else parent_video_id
+    title = f"Recording of {parent_title} · {datetime.now(timezone.utc).strftime('%b %-d %H:%M')}"
+
+    # No segments on recordings — they're free-form practice captures.
+    user_data = user_data_dir(user.id)
+    (user_data / f"{rec_id}.json").write_text("[]")
+
+    video_url = f"/videos/{user.id}/{dest.name}"
+    _record_library_entry(
+        user_id=user.id,
+        video_id=rec_id,
+        video_url=video_url,
+        title=title,
+        duration=duration,
+        segment_count=0,
+        source="recording",
+        kind="dance",
+        parent_video_id=parent_video_id,
+    )
+    return JSONResponse(
+        {
+            "video_id": rec_id,
+            "video_url": video_url,
+            "duration": duration,
+            "title": title,
+            "parent_video_id": parent_video_id,
+        }
+    )
+
+
+@app.get("/api/library/{video_id}/recordings")
+async def list_recordings_for(
+    video_id: str,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """List the user's self-recordings linked to the given source entry."""
+    out = [
+        i
+        for i in _read_library(user.id)
+        if i.get("parent_video_id") == video_id
+    ]
+    return JSONResponse(out)
+
+
+# ---------------------------------------------------------------------------
+# Vocal-removal / karaoke (singing mode)
+# ---------------------------------------------------------------------------
+
+
+def _generate_stem(src: Path, dest: Path, which: str) -> None:
+    """Generate a vocals-only or instrumental-only audio file via ffmpeg's
+    center-channel manipulation. No ML deps, fast, but quality depends on
+    how cleanly the original mix places vocals in the stereo center.
+
+    `instrumental` = vocals removed (karaoke).
+    `vocals` = isolated center band (best-effort vocals only).
+    """
+    if which == "instrumental":
+        # Subtract center channel: vocals (usually panned center) cancel out.
+        af = "pan=stereo|c0=c0-c1|c1=c1-c0"
+    else:
+        # Sum L+R to get the center, then bandpass around the vocal range.
+        af = "pan=mono|c0=0.5*c0+0.5*c1,highpass=f=150,lowpass=f=8000"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        "-vn",  # no video
+        "-af", af,
+        "-c:a", "libmp3lame", "-b:a", "192k",  # mp3 — much smaller than wav
+        str(dest),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        msg = (result.stderr or "").strip().splitlines()[-2:]
+        raise RuntimeError("ffmpeg stem failed: " + " | ".join(msg))
+
+
+@app.get("/api/library/{video_id}/stems/{which}")
+async def get_stem(
+    video_id: str,
+    which: Literal["vocals", "instrumental"],
+    user: auth.User = Depends(get_current_user),
+) -> FileResponse:
+    """Return the cached vocals-only or instrumental-only audio for a video,
+    generating it on first request (lazy; ~5-15 s per song)."""
+    owner_id, _perm = resolve_entry_access(user.id, video_id)
+    entry = next(
+        (i for i in _read_library(owner_id) if i.get("video_id") == video_id),
+        None,
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail="Unknown video")
+    filename = entry.get("video_url", "").split("/")[-1]
+    if not filename:
+        raise HTTPException(status_code=410, detail="Source file missing")
+    src = user_downloads_dir(owner_id) / filename
+    if not src.is_file():
+        raise HTTPException(status_code=410, detail="Source file missing")
+
+    stem_path = user_data_dir(owner_id) / f"{video_id}.{which}.mp3"
+    if not stem_path.exists():
+        try:
+            await asyncio.to_thread(_generate_stem, src, stem_path, which)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    return FileResponse(stem_path, media_type="audio/mpeg")
 
 
 # ---------------------------------------------------------------------------
