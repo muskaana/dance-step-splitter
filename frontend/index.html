@@ -32,6 +32,10 @@
         background-color: #4f46e5;
         color: white;
       }
+      .kind-btn.active {
+        background-color: #be185d;
+        color: white;
+      }
       .segment-btn.locked {
         opacity: 0.6;
         cursor: not-allowed;
@@ -349,7 +353,11 @@
                 Paste a YouTube link or upload a file, optionally crop, then process.
               </p>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
+              <div id="kind-toggle" class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs">
+                <button data-kind="dance" class="kind-btn active px-3 py-1.5 hover:bg-slate-100">💃 Dance</button>
+                <button data-kind="singing" class="kind-btn px-3 py-1.5 hover:bg-slate-100 border-l border-slate-300">🎤 Sing</button>
+              </div>
               <div id="source-toggle" class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs">
                 <button data-source="youtube" class="source-btn active px-3 py-1.5 hover:bg-slate-100">YouTube URL</button>
                 <button data-source="upload" class="source-btn px-3 py-1.5 hover:bg-slate-100 border-l border-slate-300">Upload file</button>
@@ -602,6 +610,18 @@
               playsinline
             ></video>
 
+            <!-- Live webcam stream — when active, fills the same area as the
+                 source video. Mirrored horizontally so it acts as a real
+                 mirror. Stays muted so we never echo the user's mic. -->
+            <video
+              id="webcam-video"
+              class="hidden absolute inset-0 w-full h-full object-cover z-[4]"
+              style="transform: scaleX(-1)"
+              autoplay
+              playsinline
+              muted
+            ></video>
+
             <!-- Shown over the (invisible) video when Memory Mode is on so
                  the user knows audio is still streaming through. -->
             <div
@@ -688,7 +708,7 @@
               <span class="text-xs text-slate-500">s</span>
             </div>
 
-            <div class="flex items-center gap-2 ml-auto">
+            <div class="dance-only flex items-center gap-2 ml-auto">
               <span class="text-sm font-medium text-slate-600">Audio</span>
               <div id="audio-mode" class="inline-flex rounded-md border border-slate-300 overflow-hidden">
                 <button
@@ -708,7 +728,7 @@
 
             <button
               id="mirror-btn"
-              class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              class="dance-only px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
             >
               Mirror Mode: <span id="mirror-state">Off</span>
             </button>
@@ -719,6 +739,14 @@
               title="Hide the video and practice from audio alone"
             >
               Memory Mode: <span id="memory-state">Off</span>
+            </button>
+
+            <button
+              id="webcam-btn"
+              class="dance-only px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              title="Use your webcam as a mirror — combine with Memory Mode to practice along"
+            >
+              Webcam Mirror: <span id="webcam-state">Off</span>
             </button>
 
             <button
@@ -828,6 +856,21 @@
                 </div>
               </div>
               <p id="editor-status" class="text-xs text-slate-500 mt-2"></p>
+            </div>
+
+            <!-- Singing-only: shows the lyrics of the segment containing the
+                 current playhead. Hidden on dance entries. -->
+            <div
+              id="lyrics-panel"
+              class="singing-only mt-3 p-3 rounded-md bg-slate-50 border border-slate-200"
+            >
+              <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                Now singing
+              </div>
+              <div
+                id="lyrics-current"
+                class="text-sm text-slate-800 whitespace-pre-wrap leading-snug min-h-[2.5rem]"
+              ></div>
             </div>
           </div>
         </aside>

@@ -33,7 +33,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, HttpUrl
 
-from backend import auth, downloader, pose_extractor, segmenter, sequence_builder, tuner
+from backend import (
+    audio_segmenter,
+    auth,
+    downloader,
+    pose_extractor,
+    segmenter,
+    sequence_builder,
+    tuner,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -138,6 +146,7 @@ def _record_library_entry(
     source_url: Optional[str] = None,
     crop_start: Optional[float] = None,
     crop_end: Optional[float] = None,
+    kind: str = "dance",
 ) -> dict:
     """Upsert a library entry. Most-recent processing of a given video_id wins."""
     items = _read_library(user_id)
@@ -155,6 +164,7 @@ def _record_library_entry(
         "last_edited_at": None,
         "crop_start": crop_start,
         "crop_end": crop_end,
+        "kind": kind,
     }
     items.insert(0, entry)
     _write_library(user_id, items)
@@ -229,6 +239,7 @@ app.add_middleware(
 
 class ProcessRequest(BaseModel):
     url: HttpUrl
+    kind: Literal["dance", "singing"] = "dance"
     quality: Literal["480p", "720p", "1080p"] = "720p"
     model_variant: Literal["lite", "full", "heavy"] = "full"
     sample_every_n_frames: int = Field(default=1, ge=1, le=10)
@@ -322,33 +333,44 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
             f"cookies={info.get('used_cookies')}"
         )
 
-    # 2. Extract pose landmarks (optionally cropped) and persist for the tuner.
-    pose_df = pose_extractor.extract_pose_landmarks(
-        video_path,
-        model_variant=req.model_variant,
-        sample_every_n_frames=req.sample_every_n_frames,
-        start_time=req.start_time,
-        end_time=req.end_time,
-    )
-    _save_pose_data(user_id, video_id, pose_df)
+    # 2. Segment. Path forks on `kind`:
+    #    - dance → pose extraction + kinematic segmenter (existing flow)
+    #    - singing → audio silence-detection (no MediaPipe, much faster)
+    tuning_result = None
+    if req.kind == "singing":
+        segments = audio_segmenter.segment_by_audio(
+            video_path,
+            crop_start=req.start_time,
+            crop_end=req.end_time,
+            min_segment_duration=max(req.min_segment_duration, 8.0),
+            max_segment_duration=max(req.max_segment_duration, 30.0),
+        )
+        pose_df = None
+    else:
+        pose_df = pose_extractor.extract_pose_landmarks(
+            video_path,
+            model_variant=req.model_variant,
+            sample_every_n_frames=req.sample_every_n_frames,
+            start_time=req.start_time,
+            end_time=req.end_time,
+        )
+        _save_pose_data(user_id, video_id, pose_df)
 
-    # 3. Tune segmenter params against the user's past manual edits, then
-    #    segment with the chosen params. Defaults apply if there's no history.
-    seg_params = {
-        "smooth_window": req.smooth_window,
-        "low_velocity_percentile": req.low_velocity_percentile,
-        "min_segment_duration": req.min_segment_duration,
-        "max_segment_duration": req.max_segment_duration,
-    }
-    tuning_result = tuner.tune(_load_tuning_examples(user_id))
-    if tuning_result is not None:
-        seg_params = {**seg_params, **tuning_result.params}
-    segments = segmenter.segment_steps(
-        pose_df,
-        crop_start=req.start_time,
-        crop_end=req.end_time,
-        **seg_params,
-    )
+        seg_params = {
+            "smooth_window": req.smooth_window,
+            "low_velocity_percentile": req.low_velocity_percentile,
+            "min_segment_duration": req.min_segment_duration,
+            "max_segment_duration": req.max_segment_duration,
+        }
+        tuning_result = tuner.tune(_load_tuning_examples(user_id))
+        if tuning_result is not None:
+            seg_params = {**seg_params, **tuning_result.params}
+        segments = segmenter.segment_steps(
+            pose_df,
+            crop_start=req.start_time,
+            crop_end=req.end_time,
+            **seg_params,
+        )
 
     # 4. Build clean sequence + persist to the user's data folder
     sequence, _ = sequence_builder.build_and_save(
@@ -358,7 +380,11 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         sequence, filename=f"{video_id}.json", data_dir=user_data
     )
 
-    duration = float(pose_df["timestamp"].max()) if not pose_df.empty else 0.0
+    if pose_df is not None and not pose_df.empty:
+        duration = float(pose_df["timestamp"].max())
+    else:
+        # Singing path: probe the file directly since we don't have pose data.
+        duration = float(_probe_duration(video_path) or 0)
     video_url = f"/videos/{user_id}/{video_path.name}"
 
     _record_library_entry(
@@ -372,6 +398,7 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         source_url=str(req.url),
         crop_start=req.start_time,
         crop_end=req.end_time,
+        kind=req.kind,
     )
 
     return ProcessResponse(
@@ -423,6 +450,7 @@ def _run_file_pipeline(
     start_time: Optional[float] = None,
     end_time: Optional[float] = None,
     original_filename: Optional[str] = None,
+    kind: str = "dance",
 ) -> ProcessResponse:
     """Same as `_run_pipeline` but skipping the download step."""
     user_data = user_data_dir(user_id)
@@ -431,30 +459,41 @@ def _run_file_pipeline(
         Path(original_filename).stem if original_filename else video_id
     )
 
-    pose_df = pose_extractor.extract_pose_landmarks(
-        video_path,
-        model_variant=model_variant,
-        sample_every_n_frames=sample_every_n_frames,
-        start_time=start_time,
-        end_time=end_time,
-    )
-    _save_pose_data(user_id, video_id, pose_df)
+    tuning_result = None
+    if kind == "singing":
+        segments = audio_segmenter.segment_by_audio(
+            video_path,
+            crop_start=start_time,
+            crop_end=end_time,
+            min_segment_duration=max(min_segment_duration, 8.0),
+            max_segment_duration=max(max_segment_duration, 30.0),
+        )
+        pose_df = None
+    else:
+        pose_df = pose_extractor.extract_pose_landmarks(
+            video_path,
+            model_variant=model_variant,
+            sample_every_n_frames=sample_every_n_frames,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        _save_pose_data(user_id, video_id, pose_df)
 
-    seg_params = {
-        "smooth_window": smooth_window,
-        "low_velocity_percentile": low_velocity_percentile,
-        "min_segment_duration": min_segment_duration,
-        "max_segment_duration": max_segment_duration,
-    }
-    tuning_result = tuner.tune(_load_tuning_examples(user_id))
-    if tuning_result is not None:
-        seg_params = {**seg_params, **tuning_result.params}
-    segments = segmenter.segment_steps(
-        pose_df,
-        crop_start=start_time,
-        crop_end=end_time,
-        **seg_params,
-    )
+        seg_params = {
+            "smooth_window": smooth_window,
+            "low_velocity_percentile": low_velocity_percentile,
+            "min_segment_duration": min_segment_duration,
+            "max_segment_duration": max_segment_duration,
+        }
+        tuning_result = tuner.tune(_load_tuning_examples(user_id))
+        if tuning_result is not None:
+            seg_params = {**seg_params, **tuning_result.params}
+        segments = segmenter.segment_steps(
+            pose_df,
+            crop_start=start_time,
+            crop_end=end_time,
+            **seg_params,
+        )
     sequence, _ = sequence_builder.build_and_save(
         segments, filename="sequence.json", data_dir=user_data
     )
@@ -462,7 +501,10 @@ def _run_file_pipeline(
         sequence, filename=f"{video_id}.json", data_dir=user_data
     )
 
-    duration = float(pose_df["timestamp"].max()) if not pose_df.empty else 0.0
+    if pose_df is not None and not pose_df.empty:
+        duration = float(pose_df["timestamp"].max())
+    else:
+        duration = float(_probe_duration(video_path) or 0)
     video_url = f"/videos/{user_id}/{video_path.name}"
 
     _record_library_entry(
@@ -475,6 +517,7 @@ def _run_file_pipeline(
         source="upload",
         crop_start=start_time,
         crop_end=end_time,
+        kind=kind,
     )
 
     return ProcessResponse(
@@ -743,6 +786,7 @@ async def process_video_file(
     smooth_window: int = Form(5),
     start_time: Optional[float] = Form(None),
     end_time: Optional[float] = Form(None),
+    kind: Literal["dance", "singing"] = Form("dance"),
     user: auth.User = Depends(get_current_user),
 ) -> ProcessResponse:
     """Run the pose / segment / sequence pipeline on a user-uploaded video."""
@@ -769,6 +813,7 @@ async def process_video_file(
             start_time,
             end_time,
             file.filename,
+            kind,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
@@ -791,6 +836,7 @@ class SegmentItem(BaseModel):
     label: str = ""
     start: float = Field(..., ge=0)
     end: float = Field(..., gt=0)
+    lyrics: Optional[str] = None  # Singing-mode only; flows through unchanged.
 
 
 @app.put("/api/sequence")
@@ -807,14 +853,15 @@ async def update_sequence(
                 status_code=400,
                 detail=f"Segment {i}: end ({s.end}) must be greater than start ({s.start}).",
             )
-        out.append(
-            {
-                "id": i,
-                "label": s.label or f"Segment {i}",
-                "start": round(s.start, 2),
-                "end": round(s.end, 2),
-            }
-        )
+        item = {
+            "id": i,
+            "label": s.label or f"Segment {i}",
+            "start": round(s.start, 2),
+            "end": round(s.end, 2),
+        }
+        if s.lyrics is not None and s.lyrics.strip():
+            item["lyrics"] = s.lyrics
+        out.append(item)
     (user_data_dir(user.id) / "sequence.json").write_text(json.dumps(out, indent=2))
     return JSONResponse(out)
 
@@ -934,14 +981,15 @@ async def update_library_entry(
                 status_code=400,
                 detail=f"Segment {i}: end ({s.end}) must be greater than start ({s.start}).",
             )
-        out.append(
-            {
-                "id": i,
-                "label": s.label or f"Segment {i}",
-                "start": round(s.start, 2),
-                "end": round(s.end, 2),
-            }
-        )
+        item = {
+            "id": i,
+            "label": s.label or f"Segment {i}",
+            "start": round(s.start, 2),
+            "end": round(s.end, 2),
+        }
+        if s.lyrics is not None and s.lyrics.strip():
+            item["lyrics"] = s.lyrics
+        out.append(item)
 
     # Persist edits onto the OWNER's archive (shared edits go to the original).
     owner_data = user_data_dir(owner_id)

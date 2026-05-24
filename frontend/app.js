@@ -11,6 +11,9 @@ const memoryControls = document.getElementById("memory-controls");
 const memoryPlayBtn = document.getElementById("memory-play-btn");
 const memorySeek = document.getElementById("memory-seek");
 const memoryTime = document.getElementById("memory-time");
+const webcamBtn = document.getElementById("webcam-btn");
+const webcamState = document.getElementById("webcam-state");
+const webcamVideo = document.getElementById("webcam-video");
 const mirrorState = document.getElementById("mirror-state");
 const speedControls = document.getElementById("speed-controls");
 const loopBreakInput = document.getElementById("loop-break");
@@ -26,7 +29,10 @@ const nextDrillBtn = document.getElementById("next-drill-btn");
 
 const audioModeRow = document.getElementById("audio-mode");
 
+const kindToggle = document.getElementById("kind-toggle");
 const sourceToggle = document.getElementById("source-toggle");
+const lyricsPanel = document.getElementById("lyrics-panel");
+const lyricsCurrent = document.getElementById("lyrics-current");
 const sourceYoutubeRow = document.getElementById("source-youtube");
 const sourceUploadRow = document.getElementById("source-upload");
 const youtubeUrlInput = document.getElementById("youtube-url");
@@ -128,6 +134,11 @@ let currentVideoId = null;
 /** Permission level on the currently-loaded video: "owner", "edit", or "view".
     Drives whether the segment editor is reachable. */
 let currentPermission = "owner";
+/** "dance" or "singing" — affects which controls show + how the editor renders.
+    Set from process responses and library loads; defaults to whichever mode
+    the user has selected for *new* processing in the Add-a-video card. */
+let currentEntryKind = "dance";
+let pendingKind = "dance"; // what the kind-toggle is set to for next process
 
 /** Polling state for collaborative edit sync. While a video is open we ping
     /api/library/{video_id} every 15s; if `last_edited_at` changed since we
@@ -177,6 +188,54 @@ async function loadSegments() {
 /* ---------------------------------------------------------------- */
 /* Segment grid rendering + manual selection                         */
 /* ---------------------------------------------------------------- */
+
+/** Show/hide dance-only vs singing-only controls based on the loaded entry. */
+function applyKindGating() {
+  const singing = currentEntryKind === "singing";
+  document.querySelectorAll(".dance-only").forEach((el) => {
+    el.classList.toggle("hidden", singing);
+  });
+  document.querySelectorAll(".singing-only").forEach((el) => {
+    el.classList.toggle("hidden", !singing);
+  });
+  if (singing) updateLyricsPanel();
+}
+
+/** Drives the kind-toggle in the Add-a-video card (separate from the
+    currently-loaded entry's kind — this is what the *next* process will use). */
+function setPendingKind(kind) {
+  pendingKind = kind === "singing" ? "singing" : "dance";
+  document.querySelectorAll(".kind-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.kind === pendingKind);
+  });
+}
+
+if (kindToggle) {
+  kindToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest(".kind-btn");
+    if (!btn) return;
+    e.preventDefault();
+    setPendingKind(btn.dataset.kind);
+  });
+}
+
+/** Find the segment that contains the current playhead and surface its
+    lyrics in the singing-mode panel. */
+function updateLyricsPanel() {
+  if (currentEntryKind !== "singing" || !lyricsCurrent) return;
+  const t = video.currentTime || 0;
+  const seg = allSegments.find((s) => t >= s.start && t < s.end);
+  if (!seg) {
+    lyricsCurrent.textContent = "—";
+    return;
+  }
+  lyricsCurrent.textContent =
+    seg.lyrics && seg.lyrics.trim()
+      ? seg.lyrics
+      : `(${seg.label} — open Edit to add lyrics)`;
+}
+
+video.addEventListener("timeupdate", updateLyricsPanel);
 
 /** Show/hide editing affordances based on the current video's permission.
     "owner" and "edit" → Edit button enabled. "view" → hidden + banner shown. */
@@ -929,21 +988,90 @@ memorySeek.addEventListener("input", () => {
   }
 });
 
+/* ---------- Memory Mode + Webcam Mirror ----------
+   Both modes hide the source video while audio keeps playing. The custom
+   playback bar shows whenever the source video is hidden (either mode).
+   The "MEMORY MODE" overlay label only shows when memory mode is on AND
+   the webcam isn't covering the area. */
+
+let memoryModeOn = false;
+let webcamStream = null;
+
+function syncPlaybackOverlays() {
+  const webcamOn = webcamStream !== null;
+  const sourceHidden = memoryModeOn || webcamOn;
+
+  // Source video frame visibility (audio keeps playing — `invisible` ≠ paused).
+  video.classList.toggle("invisible", sourceHidden);
+
+  // Custom mini playback bar shows whenever source is hidden, so user
+  // always has play/pause + scrub.
+  memoryControls.classList.toggle("hidden", !sourceHidden);
+  memoryControls.classList.toggle("flex", sourceHidden);
+  if (sourceHidden) updateMemoryControls();
+
+  // "MEMORY MODE · audio only" label only makes sense when nothing else
+  // is shown in the blacked-out area.
+  const showLabel = memoryModeOn && !webcamOn;
+  memoryOverlay.classList.toggle("hidden", !showLabel);
+  memoryOverlay.classList.toggle("flex", showLabel);
+
+  // Webcam stream element + button state.
+  webcamVideo.classList.toggle("hidden", !webcamOn);
+  if (webcamBtn) {
+    webcamState.textContent = webcamOn ? "On" : "Off";
+    webcamBtn.classList.toggle("bg-indigo-50", webcamOn);
+    webcamBtn.classList.toggle("border-indigo-300", webcamOn);
+  }
+
+  // Memory button state mirror.
+  memoryState.textContent = memoryModeOn ? "On" : "Off";
+  memoryBtn.classList.toggle("bg-indigo-50", memoryModeOn);
+  memoryBtn.classList.toggle("border-indigo-300", memoryModeOn);
+}
+
 memoryBtn.addEventListener("click", () => {
-  // `invisible` (visibility:hidden) keeps audio playing while making the
-  // video element invisible — exactly what we want for an audio-only
-  // memory drill. We then surface our own minimal controls bar so the user
-  // still has play/pause + scrub.
-  const on = video.classList.toggle("invisible");
-  memoryState.textContent = on ? "On" : "Off";
-  memoryBtn.classList.toggle("bg-indigo-50", on);
-  memoryBtn.classList.toggle("border-indigo-300", on);
-  memoryOverlay.classList.toggle("hidden", !on);
-  memoryOverlay.classList.toggle("flex", on);
-  memoryControls.classList.toggle("hidden", !on);
-  memoryControls.classList.toggle("flex", on);
-  if (on) updateMemoryControls();
+  memoryModeOn = !memoryModeOn;
+  syncPlaybackOverlays();
 });
+
+async function startWebcam() {
+  try {
+    webcamStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
+      audio: false,
+    });
+  } catch (err) {
+    alert(
+      "Couldn't open the webcam: " +
+        (err && err.message ? err.message : err) +
+        "\n\n(If you blocked camera access earlier, allow it in your browser's site settings and try again.)"
+    );
+    return false;
+  }
+  webcamVideo.srcObject = webcamStream;
+  return true;
+}
+
+function stopWebcam() {
+  if (webcamStream) {
+    webcamStream.getTracks().forEach((t) => t.stop());
+    webcamStream = null;
+  }
+  webcamVideo.srcObject = null;
+}
+
+if (webcamBtn) {
+  webcamBtn.addEventListener("click", async () => {
+    if (webcamStream) {
+      stopWebcam();
+    } else {
+      const ok = await startWebcam();
+      if (!ok) return;
+    }
+    syncPlaybackOverlays();
+  });
+}
 
 workshopBtn.addEventListener("click", () => {
   workshop.active ? stopWorkshop() : startWorkshop();
@@ -1270,7 +1398,7 @@ youtubeQualitySelect.addEventListener("change", updateProcessSubtitle);
 /* ---------- API helpers ---------- */
 
 async function processYouTube(url, crop) {
-  const body = { url, quality: youtubeQualitySelect.value };
+  const body = { url, quality: youtubeQualitySelect.value, kind: pendingKind };
   if (crop) {
     body.start_time = crop.start;
     body.end_time = crop.end;
@@ -1290,6 +1418,7 @@ async function processYouTube(url, crop) {
 async function processFile(file, crop) {
   const form = new FormData();
   form.append("file", file);
+  form.append("kind", pendingKind);
   if (crop) {
     form.append("start_time", String(crop.start));
     form.append("end_time", String(crop.end));
@@ -1322,7 +1451,9 @@ function applyProcessResponse(data) {
   currentVideoId = data.video_id || null;
   // A freshly processed video is always owned by the requesting user.
   currentPermission = "owner";
+  currentEntryKind = data.kind || pendingKind || "dance";
   applyPermissionGating();
+  applyKindGating();
   renderSegments(allSegments);
   refreshLibrary();
   // Start watching for collaborator edits on the video we just made.
@@ -1552,18 +1683,25 @@ function renderEditor() {
         ? "text-amber-600"
         : "text-rose-600";
     row.className =
-      "flex items-center gap-2 p-2 rounded-lg border border-slate-200 bg-slate-50";
+      "flex flex-col gap-2 p-2 rounded-lg border border-slate-200 bg-slate-50";
+    const lyricsRow =
+      currentEntryKind === "singing"
+        ? `<textarea class="ed-lyrics w-full px-2 py-1 text-xs rounded border border-slate-300 bg-white resize-y min-h-[2.5rem]" placeholder="Lyrics for this segment (optional)">${escapeAttr(seg.lyrics || "")}</textarea>`
+        : "";
     row.innerHTML = `
-      <span class="text-xs font-mono text-slate-500 w-6 text-center">${idx + 1}</span>
-      <input type="text" class="ed-label flex-1 min-w-0 px-2 py-1 text-xs rounded border border-slate-300 bg-white" value="${escapeAttr(seg.label)}" />
-      <input type="number" step="0.05" min="0" class="ed-start w-20 px-2 py-1 text-xs font-mono rounded border border-slate-300 bg-white" value="${seg.start.toFixed(2)}" />
-      <span class="text-slate-400 text-xs">→</span>
-      <input type="number" step="0.05" min="0" class="ed-end w-20 px-2 py-1 text-xs font-mono rounded border border-slate-300 bg-white" value="${seg.end.toFixed(2)}" />
-      <span class="ed-status text-xs font-mono ${statusClass} w-24 text-right" title="Auto-detection prefers 4–8s; manual overrides allowed">${status.label}</span>
-      <button class="ed-play text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100" title="Preview this segment">▶</button>
-      <button class="ed-snap-start text-xs px-1.5 py-1 rounded border border-slate-300 hover:bg-slate-100" title="Snap start to playhead">⇤</button>
-      <button class="ed-snap-end text-xs px-1.5 py-1 rounded border border-slate-300 hover:bg-slate-100" title="Snap end to playhead">⇥</button>
-      <button class="ed-delete text-xs px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50" title="Delete">🗑</button>
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-mono text-slate-500 w-6 text-center">${idx + 1}</span>
+        <input type="text" class="ed-label flex-1 min-w-0 px-2 py-1 text-xs rounded border border-slate-300 bg-white" value="${escapeAttr(seg.label)}" />
+        <input type="number" step="0.05" min="0" class="ed-start w-20 px-2 py-1 text-xs font-mono rounded border border-slate-300 bg-white" value="${seg.start.toFixed(2)}" />
+        <span class="text-slate-400 text-xs">→</span>
+        <input type="number" step="0.05" min="0" class="ed-end w-20 px-2 py-1 text-xs font-mono rounded border border-slate-300 bg-white" value="${seg.end.toFixed(2)}" />
+        <span class="ed-status text-xs font-mono ${statusClass} w-24 text-right" title="Auto-detection prefers 4–8s; manual overrides allowed">${status.label}</span>
+        <button class="ed-play text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100" title="Preview this segment">▶</button>
+        <button class="ed-snap-start text-xs px-1.5 py-1 rounded border border-slate-300 hover:bg-slate-100" title="Snap start to playhead">⇤</button>
+        <button class="ed-snap-end text-xs px-1.5 py-1 rounded border border-slate-300 hover:bg-slate-100" title="Snap end to playhead">⇥</button>
+        <button class="ed-delete text-xs px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50" title="Delete">🗑</button>
+      </div>
+      ${lyricsRow}
     `;
 
     const labelEl = row.querySelector(".ed-label");
@@ -1583,6 +1721,12 @@ function renderEditor() {
     editorRowRefs.set(seg, { startEl, endEl, refreshStatus });
 
     labelEl.addEventListener("input", () => { seg.label = labelEl.value; });
+    const lyricsEl = row.querySelector(".ed-lyrics");
+    if (lyricsEl) {
+      lyricsEl.addEventListener("input", () => {
+        seg.lyrics = lyricsEl.value;
+      });
+    }
     startEl.addEventListener("input", () => {
       const v = parseFloat(startEl.value);
       if (isFinite(v)) {
@@ -1674,6 +1818,7 @@ async function saveEditorDraft() {
       label: s.label || "",
       start: Number(s.start),
       end: Number(s.end),
+      ...(s.lyrics ? { lyrics: s.lyrics } : {}),
     }));
 
     let saved;
@@ -1990,7 +2135,9 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     renderUploadFileList();
     currentVideoId = data.video_id;
     currentPermission = data.permission || "owner";
+    currentEntryKind = data.kind || "dance";
     applyPermissionGating();
+    applyKindGating();
     youtubeUrlInput.value = data.source_url || "";
     // Watch for upstream edits (collaborator or owner) on this entry.
     startEntryPoll(currentVideoId, data.last_edited_at || null);
@@ -2655,7 +2802,12 @@ userNameEl.addEventListener("keydown", (e) => {
   await redeemPendingShareIfAny();
 
   video.volume = VIDEO_VOLUME_BY_MODE[counts.mode]; // default: On Audio @ 1.0
+  // Preserve pitch when the user slows the video down — important for
+  // singing practice (chipmunk audio is useless) and benign for dance.
+  try { video.preservesPitch = true; } catch {}
   setSource("youtube");
+  setPendingKind("dance");
+  applyKindGating();
   updateProcessSubtitle();
   // Empty-state shows by default since no video src is set; it'll hide when
   // either a library entry is loaded or the user picks a local file.
