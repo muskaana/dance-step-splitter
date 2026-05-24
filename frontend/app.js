@@ -39,8 +39,6 @@ const prevDrillBtn = document.getElementById("prev-drill-btn");
 const nextDrillBtn = document.getElementById("next-drill-btn");
 
 const audioModeRow = document.getElementById("audio-mode");
-const stemsMode = document.getElementById("stems-mode");
-const stemAudio = document.getElementById("stem-audio");
 
 const kindToggle = document.getElementById("kind-toggle");
 const sourceToggle = document.getElementById("source-toggle");
@@ -888,12 +886,47 @@ function resetCountBeat() {
 /* ---------------------------------------------------------------- */
 
 let loopBreakTimer = null;
+let breakCountdownTimer = null;
+let breakEndAt = 0;
+const breakOverlay = document.getElementById("break-overlay");
+const breakCountdown = document.getElementById("break-countdown");
+
+function showBreakOverlay(totalMs) {
+  if (!breakOverlay) return;
+  breakEndAt = Date.now() + totalMs;
+  breakOverlay.classList.remove("hidden");
+  breakOverlay.classList.add("flex");
+  // Tick the countdown ~10× per second so the number animates smoothly.
+  if (breakCountdownTimer) clearInterval(breakCountdownTimer);
+  const tick = () => {
+    const remaining = Math.max(0, breakEndAt - Date.now()) / 1000;
+    breakCountdown.textContent = remaining.toFixed(1);
+    if (remaining <= 0) {
+      clearInterval(breakCountdownTimer);
+      breakCountdownTimer = null;
+    }
+  };
+  tick();
+  breakCountdownTimer = setInterval(tick, 100);
+}
+
+function hideBreakOverlay() {
+  if (breakCountdownTimer) {
+    clearInterval(breakCountdownTimer);
+    breakCountdownTimer = null;
+  }
+  if (breakOverlay) {
+    breakOverlay.classList.add("hidden");
+    breakOverlay.classList.remove("flex");
+  }
+}
 
 function cancelLoopBreak() {
   if (loopBreakTimer) {
     clearTimeout(loopBreakTimer);
     loopBreakTimer = null;
   }
+  hideBreakOverlay();
 }
 
 function currentLoopBreakSeconds() {
@@ -913,8 +946,10 @@ function snapLoopBack(afterMs) {
     return;
   }
   video.pause();
+  showBreakOverlay(afterMs);
   loopBreakTimer = setTimeout(() => {
     loopBreakTimer = null;
+    hideBreakOverlay();
     // Loop bounds may have changed during the break (user cleared / picked
     // a different segment / workshop stopped) — bail out cleanly.
     if (!loopBounds) return;
@@ -945,8 +980,10 @@ video.addEventListener("timeupdate", () => {
         // setting only applies BETWEEN drills, not between reps.
         if (breakMs > 0) {
           video.pause();
+          showBreakOverlay(breakMs);
           loopBreakTimer = setTimeout(() => {
             loopBreakTimer = null;
+            hideBreakOverlay();
             enterPhase(workshop.phaseIdx + 1);
           }, breakMs);
         } else {
@@ -1364,77 +1401,6 @@ audioModeRow.addEventListener("click", (e) => {
   setAudioMode(btn.dataset.mode);
 });
 
-/* ---------- Stems / karaoke (singing mode) ---------- */
-
-let currentStem = "both"; // "both" | "vocals" | "instrumental"
-
-function setStem(which) {
-  if (!stemAudio || !stemsMode) return;
-  currentStem = which;
-  document.querySelectorAll(".stem-btn").forEach((b) => {
-    b.classList.toggle("active", b.dataset.stem === which);
-  });
-
-  if (which === "both") {
-    // Original audio plays from the video element. Stop and unhook the stem.
-    stemAudio.pause();
-    stemAudio.removeAttribute("src");
-    stemAudio.load();
-    video.muted = false;
-    return;
-  }
-
-  if (!currentVideoId) return;
-  const url = `/api/library/${encodeURIComponent(currentVideoId)}/stems/${which}`;
-  stemAudio.src = url;
-  // Mute the source video; the stem track replaces its audio.
-  video.muted = true;
-  // Snap stem to current playhead and match play state.
-  stemAudio.addEventListener(
-    "loadedmetadata",
-    () => {
-      stemAudio.currentTime = video.currentTime || 0;
-      if (!video.paused) stemAudio.play().catch(() => {});
-    },
-    { once: true }
-  );
-}
-
-if (stemsMode) {
-  stemsMode.addEventListener("click", (e) => {
-    const btn = e.target.closest(".stem-btn");
-    if (!btn) return;
-    setStem(btn.dataset.stem);
-  });
-}
-
-// Keep the stem audio synced to the video element.
-let stemSyncing = false;
-video.addEventListener("play", () => {
-  if (currentStem !== "both" && stemAudio.src) {
-    stemAudio.currentTime = video.currentTime;
-    stemAudio.play().catch(() => {});
-  }
-});
-video.addEventListener("pause", () => {
-  if (currentStem !== "both") stemAudio.pause();
-});
-video.addEventListener("seeked", () => {
-  if (currentStem !== "both" && !stemSyncing) {
-    stemSyncing = true;
-    stemAudio.currentTime = video.currentTime;
-    setTimeout(() => { stemSyncing = false; }, 80);
-  }
-});
-video.addEventListener("ratechange", () => {
-  // Match playback rate so stem doesn't drift when slowed/sped.
-  try { stemAudio.playbackRate = video.playbackRate; } catch {}
-});
-
-// Reset stems when the loaded entry changes.
-const _origSetEntryKind = applyKindGating;
-// (handled implicitly via applyKindGating which the load flow already calls;
-// also reset stem to "both" on every load so we don't carry state across)
 
 /* ---------------------------------------------------------------- */
 /* Local video file picker                                           */
@@ -1785,7 +1751,6 @@ function applyProcessResponse(data) {
   // A freshly processed video is always owned by the requesting user.
   currentPermission = "owner";
   currentEntryKind = data.kind || pendingKind || "dance";
-  if (typeof setStem === "function") setStem("both");
   applyPermissionGating();
   applyKindGating();
   renderSegments(allSegments);
@@ -2500,8 +2465,7 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     currentVideoId = data.video_id;
     currentPermission = data.permission || "owner";
     currentEntryKind = data.kind || "dance";
-    if (typeof setStem === "function") setStem("both");
-    applyPermissionGating();
+      applyPermissionGating();
     applyKindGating();
     youtubeUrlInput.value = data.source_url || "";
     // Watch for upstream edits (collaborator or owner) on this entry.

@@ -30,10 +30,6 @@
         background-color: #0f172a;
         color: white;
       }
-      .stem-btn.active {
-        background-color: #be185d;
-        color: white;
-      }
       .source-btn.active {
         background-color: #4f46e5;
         color: white;
@@ -552,6 +548,10 @@
               <span class="font-semibold">Heads up:</span>
               <span>YouTube throttles cloud-hosted downloads, so the resulting video may come back at lower resolution. For best quality, download the video yourself and use <strong>Upload file</strong> instead.</span>
             </p>
+            <p class="singing-only text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-2 py-1.5 flex items-start gap-1.5">
+              <span class="font-semibold">Singing tip:</span>
+              <span>Search YouTube for "<em>&lt;song name&gt; karaoke</em>" or "<em>&lt;song name&gt; instrumental</em>" and use that as the source — the music is already vocals-free, so you can practice over the backing track without anything fighting your voice.</span>
+            </p>
           </div>
           <div id="source-upload" class="hidden space-y-2">
             <div class="flex flex-wrap items-center gap-2">
@@ -780,6 +780,23 @@
               muted
             ></video>
 
+            <!-- Countdown shown during the loop break so the user knows
+                 playback is paused intentionally (not stuck). z-index above
+                 everything except the top-right segment dropdown so they can
+                 still switch segments mid-break. -->
+            <div
+              id="break-overlay"
+              class="hidden absolute inset-0 z-[8] items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none"
+            >
+              <div class="text-center">
+                <div class="text-xs uppercase tracking-[0.3em] text-white/70 mb-2">
+                  Break
+                </div>
+                <div id="break-countdown" class="text-7xl font-bold text-white tabular-nums">5.0</div>
+                <div class="text-xs text-white/60 mt-2">Next loop starting…</div>
+              </div>
+            </div>
+
             <!-- Shown over the (invisible) video when Memory Mode is on so
                  the user knows audio is still streaming through. -->
             <div
@@ -884,15 +901,6 @@
               </div>
             </div>
 
-            <div class="singing-only flex items-center gap-2 ml-auto">
-              <span class="text-sm font-medium text-slate-600">Stems</span>
-              <div id="stems-mode" class="inline-flex rounded-md border border-slate-300 overflow-hidden">
-                <button data-stem="both" class="stem-btn active px-3 py-1 text-sm hover:bg-slate-100">Both</button>
-                <button data-stem="vocals" class="stem-btn px-3 py-1 text-sm hover:bg-slate-100 border-l border-slate-300">Vocals</button>
-                <button data-stem="instrumental" class="stem-btn px-3 py-1 text-sm hover:bg-slate-100 border-l border-slate-300">Karaoke</button>
-              </div>
-              <audio id="stem-audio" preload="auto" class="hidden"></audio>
-            </div>
 
             <button
               id="mirror-btn"
