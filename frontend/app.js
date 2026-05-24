@@ -72,6 +72,19 @@ const libraryList = document.getElementById("library-list");
 const libraryCount = document.getElementById("library-count");
 const libraryCloseBtn = document.getElementById("library-close-btn");
 
+const plansBtn = document.getElementById("plans-btn");
+const plansPanel = document.getElementById("plans-panel");
+const plansList = document.getElementById("plans-list");
+const plansNewBtn = document.getElementById("plans-new-btn");
+const plansCloseBtn = document.getElementById("plans-close-btn");
+
+const statsBtn = document.getElementById("stats-btn");
+const statsModal = document.getElementById("stats-modal");
+const statsClose = document.getElementById("stats-close");
+const statsTotal = document.getElementById("stats-total");
+const statsDaily = document.getElementById("stats-daily");
+const statsTop = document.getElementById("stats-top");
+
 const editSegmentsBtn = document.getElementById("edit-segments-btn");
 const shareCurrentBtn = document.getElementById("share-controls-btn");
 const workshopHelpBtn = document.getElementById("workshop-help-btn");
@@ -902,6 +915,7 @@ video.addEventListener("timeupdate", () => {
   if (!loopBounds) return;
   if (loopBreakTimer) return; // already in a break, ignore further fires
   if (video.currentTime >= loopBounds.end - LOOP_EPS) {
+    recordLoopRep();
     const breakMs = currentLoopBreakSeconds() * 1000;
 
     if (workshop.active) {
@@ -2198,6 +2212,219 @@ function stopLibraryPoll() {
     clearInterval(libraryPollHandle);
     libraryPollHandle = null;
   }
+}
+
+/* ---------------------------------------------------------------- */
+/* Practice plans + tracker                                          */
+/* ---------------------------------------------------------------- */
+
+let plansCache = [];
+let activePlan = null;       // { name, items, idx }
+let activePlanRestTimer = null;
+
+async function refreshPlans() {
+  try {
+    const res = await fetch("/api/plans");
+    plansCache = res.ok ? await res.json() : [];
+  } catch {
+    plansCache = [];
+  }
+  renderPlans();
+}
+
+function renderPlans() {
+  plansList.innerHTML = "";
+  if (!plansCache.length) {
+    plansList.innerHTML =
+      '<p class="text-xs text-slate-400 text-center py-4">No plans yet — click "+ New plan" to create one.</p>';
+    return;
+  }
+  for (const plan of plansCache) {
+    const card = document.createElement("div");
+    card.className =
+      "p-3 rounded-md border border-slate-200 bg-slate-50 text-sm";
+    const itemsText = plan.items
+      .map((i) => {
+        const entry = libraryCache.find((e) => e.video_id === i.video_id);
+        const name = entry ? entry.title : i.video_id;
+        return `${name}${i.rest_seconds ? ` (rest ${i.rest_seconds}s)` : ""}`;
+      })
+      .join(" → ");
+    card.innerHTML = `
+      <div class="font-semibold text-slate-900 mb-1">${escapeAttr(plan.name)}</div>
+      <div class="text-xs text-slate-600 mb-2 truncate" title="${escapeAttr(itemsText)}">${escapeAttr(itemsText)}</div>
+      <div class="flex gap-2">
+        <button class="plan-run flex-1 text-xs px-2 py-1 rounded-md bg-indigo-600 text-white font-semibold hover:bg-indigo-700">▶ Run plan</button>
+        <button class="plan-delete text-xs px-2 py-1 rounded-md border border-rose-300 text-rose-600 hover:bg-rose-50">🗑</button>
+      </div>
+    `;
+    card.querySelector(".plan-run").addEventListener("click", () => runPlan(plan));
+    card.querySelector(".plan-delete").addEventListener("click", async () => {
+      if (!confirm(`Delete plan "${plan.name}"?`)) return;
+      await fetch(`/api/plans/${plan.id}`, { method: "DELETE" });
+      await refreshPlans();
+    });
+    plansList.appendChild(card);
+  }
+}
+
+async function createPlanInteractive() {
+  await refreshLibrary();
+  if (!libraryCache.length) {
+    alert("Your library is empty — process at least one video first.");
+    return;
+  }
+  const name = window.prompt("Plan name:", "Morning routine");
+  if (!name) return;
+  // Simple prompt-driven flow: comma-separated video IDs. Could be improved
+  // with a multi-select UI later.
+  const titles = libraryCache
+    .map((e, i) => `${i + 1}. ${e.title} (${e.video_id})`)
+    .join("\n");
+  const picks = window.prompt(
+    `Library entries:\n${titles}\n\nEnter comma-separated numbers in the order you want them, e.g. "1,3,2":`,
+    "1"
+  );
+  if (!picks) return;
+  const indices = picks
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10) - 1)
+    .filter((i) => i >= 0 && i < libraryCache.length);
+  if (!indices.length) {
+    alert("No valid entries picked.");
+    return;
+  }
+  const rest = parseFloat(window.prompt("Rest seconds between each entry?", "10")) || 0;
+  const items = indices.map((i) => ({
+    video_id: libraryCache[i].video_id,
+    rest_seconds: rest,
+  }));
+  await fetch("/api/plans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, items }),
+  });
+  await refreshPlans();
+}
+
+async function runPlan(plan) {
+  if (!plan.items.length) return;
+  activePlan = { ...plan, idx: 0 };
+  plansPanel.classList.add("hidden");
+  await advanceActivePlan();
+}
+
+async function advanceActivePlan() {
+  if (!activePlan) return;
+  if (activePlan.idx >= activePlan.items.length) {
+    showProcessingSuccess(`Plan "${activePlan.name}" complete!`);
+    activePlan = null;
+    return;
+  }
+  const item = activePlan.items[activePlan.idx];
+  startProcessingBanner(
+    `Plan "${activePlan.name}" — ${activePlan.idx + 1}/${activePlan.items.length}`
+  );
+  // Load the library entry. This will eventually call applyProcessResponse
+  // (which hides the banner via showProcessingSuccess). We give the user the
+  // full playback experience for each entry; they advance manually by hitting
+  // the next-plan button (or we could auto-advance after rest time).
+  try {
+    await loadLibraryEntry(item.video_id, { autoStartWorkshop: false });
+  } catch (err) {
+    console.warn("Plan step failed", err);
+  }
+  // For now, schedule the next step after the entry's full duration + rest.
+  // The user can still interact freely; this is just a "if nobody stops it"
+  // auto-advance.
+  activePlan.idx += 1;
+  const next = activePlan.items[activePlan.idx];
+  if (next) {
+    const restMs = (item.rest_seconds || 0) * 1000;
+    const dur = (video.duration || 30) * 1000;
+    activePlanRestTimer = setTimeout(advanceActivePlan, dur + restMs);
+  }
+}
+
+plansBtn.addEventListener("click", async () => {
+  await refreshLibrary();
+  await refreshPlans();
+  plansPanel.classList.toggle("hidden");
+});
+plansCloseBtn.addEventListener("click", () => plansPanel.classList.add("hidden"));
+plansNewBtn.addEventListener("click", createPlanInteractive);
+
+/* ---------- Stats modal ---------- */
+
+async function showStats() {
+  statsModal.classList.remove("hidden");
+  statsModal.classList.add("flex");
+  statsTotal.textContent = "…";
+  statsDaily.innerHTML = "";
+  statsTop.innerHTML = "";
+  try {
+    const res = await fetch("/api/stats?days=7");
+    const data = res.ok ? await res.json() : {};
+    const mins = Math.round((data.total_seconds || 0) / 60);
+    statsTotal.textContent = `${mins} min`;
+
+    // Daily bar chart (last 7 days, SVG-free, just divs with heights).
+    const daily = data.daily_seconds || [];
+    const peak = Math.max(1, ...daily.map((d) => d.seconds));
+    statsDaily.innerHTML = "";
+    for (const d of daily) {
+      const bar = document.createElement("div");
+      bar.className = "flex-1 bg-indigo-500 rounded-t";
+      bar.style.height = `${(d.seconds / peak) * 100}%`;
+      bar.title = `${d.day}: ${Math.round(d.seconds / 60)} min`;
+      statsDaily.appendChild(bar);
+    }
+
+    statsTop.innerHTML = "";
+    for (const t of data.top_segments || []) {
+      const entry = libraryCache.find((e) => e.video_id === t.video_id);
+      const title = entry ? entry.title : t.video_id;
+      const li = document.createElement("li");
+      li.className = "flex justify-between";
+      li.innerHTML = `<span class="truncate">${escapeAttr(title)} · seg ${t.segment_id ?? "—"}</span><span class="text-slate-500 font-mono">${t.reps}×</span>`;
+      statsTop.appendChild(li);
+    }
+    if (!data.top_segments || !data.top_segments.length) {
+      statsTop.innerHTML = '<li class="text-slate-400 text-center py-2">No reps logged yet.</li>';
+    }
+  } catch (err) {
+    statsTotal.textContent = "error";
+  }
+}
+
+statsBtn.addEventListener("click", showStats);
+statsClose.addEventListener("click", () => {
+  statsModal.classList.add("hidden");
+  statsModal.classList.remove("flex");
+});
+
+/* ---------- Practice tracker (called on each loop wrap) ---------- */
+
+let lastLoggedAt = 0;
+
+function recordLoopRep() {
+  if (!currentVideoId || !loopBounds) return;
+  const now = Date.now();
+  // Rate-limit to one ping per 3s to avoid spamming on short loops.
+  if (now - lastLoggedAt < 3000) return;
+  lastLoggedAt = now;
+  const dur = loopBounds.end - loopBounds.start;
+  const segId =
+    selectedSegments.length === 1 ? selectedSegments[0].id : null;
+  fetch("/api/practice-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      video_id: currentVideoId,
+      segment_id: segId,
+      duration_seconds: dur,
+    }),
+  }).catch(() => {});
 }
 
 libraryBtn.addEventListener("click", async () => {

@@ -871,6 +871,100 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Practice plans + activity tracker
+# ---------------------------------------------------------------------------
+
+
+class PlanItem(BaseModel):
+    video_id: str
+    rest_seconds: float = Field(default=0.0, ge=0)
+
+
+class PlanRequest(BaseModel):
+    name: str
+    items: list[PlanItem]
+
+
+class PracticeLogEntry(BaseModel):
+    video_id: str
+    segment_id: Optional[int] = None
+    duration_seconds: float = Field(..., gt=0)
+
+
+def _plan_to_dict(plan: auth.PracticePlan) -> dict:
+    return {
+        "id": plan.id,
+        "name": plan.name,
+        "items": plan.items,
+        "created_at": plan.created_at,
+        "updated_at": plan.updated_at,
+    }
+
+
+@app.get("/api/plans")
+async def list_practice_plans(
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    return JSONResponse([_plan_to_dict(p) for p in auth.list_plans(user.id)])
+
+
+@app.post("/api/plans")
+async def create_practice_plan(
+    payload: PlanRequest,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    plan = auth.create_plan(
+        user.id, payload.name, [i.model_dump() for i in payload.items]
+    )
+    return JSONResponse(_plan_to_dict(plan))
+
+
+@app.put("/api/plans/{plan_id}")
+async def update_practice_plan(
+    plan_id: int,
+    payload: PlanRequest,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    plan = auth.update_plan(
+        user.id, plan_id, payload.name, [i.model_dump() for i in payload.items]
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return JSONResponse(_plan_to_dict(plan))
+
+
+@app.delete("/api/plans/{plan_id}")
+async def delete_practice_plan(
+    plan_id: int,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    ok = auth.delete_plan(user.id, plan_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/practice-log")
+async def record_practice_entry(
+    payload: PracticeLogEntry,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    auth.record_practice(
+        user.id, payload.video_id, payload.segment_id, payload.duration_seconds
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/stats")
+async def get_practice_stats(
+    days: int = 7,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    days = max(1, min(days, 365))
+    return JSONResponse(auth.stats_for_user(user.id, days))
+
+
 @app.get("/api/library")
 async def list_library(
     user: auth.User = Depends(get_current_user),

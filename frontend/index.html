@@ -2,7 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>Dance Step Splitter</title>
     <link
       rel="icon"
@@ -53,6 +55,34 @@
       }
       .rep-pulse {
         animation: rep-pulse 0.35s ease-out;
+      }
+      /* Respect iOS notch / Android nav bar. */
+      body {
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      /* Touch-friendly tap targets on small screens (Apple HIG min: 44px). */
+      @media (max-width: 640px) {
+        button, label, input[type="number"], select {
+          min-height: 40px;
+        }
+        .segment-btn {
+          min-height: 44px;
+        }
+        .source-btn, .kind-btn, .audio-mode-btn, .speed-btn {
+          min-height: 36px;
+          padding-left: 0.75rem;
+          padding-right: 0.75rem;
+        }
+        /* Quick-segment dropdown and restart button need bigger tap area. */
+        #quick-segments-btn, #restart-segment-btn {
+          padding: 0.5rem 0.75rem;
+          font-size: 0.875rem;
+        }
+        /* Custom playback bar gets bigger play button + thicker slider. */
+        #memory-play-btn { width: 2.5rem; height: 2.5rem; font-size: 1.25rem; }
+        #memory-seek { height: 1.5rem; }
       }
     </style>
   </head>
@@ -135,38 +165,61 @@
             <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">1</span>
             <div>
               <h3 class="font-semibold text-slate-900">Add a video</h3>
-              <p class="text-sm text-slate-600">Paste a YouTube URL and click <em>Process video</em>, or click <em>Upload & process local video</em> to use an MP4 from your computer.</p>
+              <p class="text-sm text-slate-600">
+                Choose <em>💃 Dance</em> or <em>🎤 Sing</em>, then paste a YouTube URL or upload a file. Dance uses body-motion detection to find moves; Sing uses audio silences to find verses/choruses.
+                For best quality on YouTube content, download the source yourself and use Upload.
+              </p>
             </div>
           </li>
           <li class="flex gap-3">
             <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">2</span>
             <div>
-              <h3 class="font-semibold text-slate-900">Crop the choreography</h3>
-              <p class="text-sm text-slate-600">Skip the intro / outro: scrub to where the dance actually starts, hit <em>Use playhead → Start</em>, and do the same for the end. Then click <em>Process Video</em> in the crop panel.</p>
+              <h3 class="font-semibold text-slate-900">Crop & process</h3>
+              <p class="text-sm text-slate-600">
+                Skip the intro/outro: scrub the player, hit <em>Use playhead → Start / End</em>, then click <em>Process Video</em>. You can also pick multiple files to combine into one routine before processing.
+              </p>
             </div>
           </li>
           <li class="flex gap-3">
             <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">3</span>
             <div>
-              <h3 class="font-semibold text-slate-900">Edit segments</h3>
-              <p class="text-sm text-slate-600">The auto-detected segments appear on the right. Click <em>Edit</em> to tweak start/end times, split at the playhead, add or delete a segment. Save when happy — your edits go to your library.</p>
+              <h3 class="font-semibold text-slate-900">Edit segments (and lyrics)</h3>
+              <p class="text-sm text-slate-600">
+                Auto-detected segments appear below the video. Click <em>Edit</em> to tweak start/end times, split at the playhead, add/delete, or rename. Editing a boundary auto-links the adjacent segment so there are no gaps.
+                <span class="block mt-1">For singing entries, each segment also has a lyrics text box — what you type shows up live under the segments while playing.</span>
+              </p>
             </div>
           </li>
           <li class="flex gap-3">
             <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">4</span>
             <div>
-              <h3 class="font-semibold text-slate-900">Pick your settings</h3>
-              <p class="text-sm text-slate-600">Below the video: change <em>Speed</em> (slo-mo for tricky moves), toggle <em>Mirror Mode</em> to follow along like a class, and switch <em>On Audio</em> / <em>On Counts</em> to hear a 1–8 count instead of music.</p>
+              <h3 class="font-semibold text-slate-900">Pick your practice settings</h3>
+              <p class="text-sm text-slate-600">
+                Below the video: change <em>Speed</em> (slo-mo without chipmunk pitch), set a <em>Break</em> between loops, toggle <em>Mirror Mode</em> for dance, switch <em>On Audio</em> / <em>On Counts</em> for a spoken 1–8, or flip on <em>Memory Mode</em> to black out the video and practice from audio alone. With Memory Mode on, the <em>Webcam Mirror</em> toggle replaces the black screen with your own mirrored camera feed.
+              </p>
             </div>
           </li>
           <li class="flex gap-3">
             <span class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">5</span>
             <div>
               <h3 class="font-semibold text-slate-900">Practice</h3>
-              <p class="text-sm text-slate-600">Click individual segment buttons to loop them, combine several to drill a run, or hit <em>Start Workshop</em> for a guided chunking-and-chaining session: drill 1, drill 2, combine 1+2, drill 3, combine 1+2+3, and so on.</p>
+              <p class="text-sm text-slate-600">
+                Click segment buttons to loop them (or combine several to drill a run). Use the dropdown overlay in the top-right of the video to jump between segments while watching, and ↻ to restart the current loop.
+                For a guided session, hit <em>Start Workshop</em> — it drills segment 1, drills segment 2, combines 1+2, drills 3, combines 1+2+3, and so on. Reps within a drill repeat instantly; the <em>Break</em> setting pauses between different drills.
+              </p>
             </div>
           </li>
         </ol>
+
+        <div class="mt-5 pt-4 border-t border-slate-200">
+          <h3 class="text-sm font-semibold text-slate-900 mb-2">Library & sharing</h3>
+          <ul class="text-sm text-slate-600 space-y-1.5 list-disc pl-5">
+            <li>Every processed video saves to your <em>Library</em> (top of the page). Open one to pick up where you left off.</li>
+            <li>Rename a video by clicking the ✎ next to its title in the library.</li>
+            <li><em>Share</em> a video by username (direct share) or by link (anyone who signs in via the link gets access). View-only locks editing; edit-mode lets collaborators tweak the same segments — changes sync within ~15 s.</li>
+            <li><em>Combine</em> lets you pick multiple library entries and splice them into one routine, preserving each segment's labels and lyrics.</li>
+          </ul>
+        </div>
         <button
           id="tutorial-dismiss"
           class="mt-6 w-full py-2 rounded-md bg-indigo-600 text-white font-semibold hover:bg-indigo-700"
@@ -252,7 +305,7 @@
       </div>
     </div>
 
-    <div id="app-root" class="max-w-7xl mx-auto p-4 lg:p-8">
+    <div id="app-root" class="max-w-7xl mx-auto p-2 sm:p-4 lg:p-8">
       <header class="mb-6 space-y-4">
         <div class="flex items-center justify-between flex-wrap gap-3">
           <div>
@@ -283,6 +336,76 @@
             >
               Library <span id="library-count" class="text-xs text-slate-500 ml-1"></span>
             </button>
+            <button
+              id="plans-btn"
+              type="button"
+              class="text-sm bg-white border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50"
+            >
+              Plans
+            </button>
+            <button
+              id="stats-btn"
+              type="button"
+              class="text-sm bg-white border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50"
+              title="Practice stats"
+            >
+              📊
+            </button>
+          </div>
+        </div>
+
+        <!-- Practice plans panel (sequencing multiple library entries into a session) -->
+        <section
+          id="plans-panel"
+          class="hidden bg-white border border-slate-200 rounded-xl shadow-sm p-3"
+        >
+          <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+            <h3 class="text-sm font-semibold text-slate-900">Practice plans</h3>
+            <div class="flex items-center gap-2">
+              <button
+                id="plans-new-btn"
+                class="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                + New plan
+              </button>
+              <button
+                id="plans-close-btn"
+                class="text-xs text-slate-500 hover:text-slate-800"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <p class="text-[11px] text-slate-500 mb-2">
+            A plan plays a sequence of library entries back-to-back, with optional rest between each.
+          </p>
+          <div id="plans-list" class="space-y-2">
+            <p class="text-xs text-slate-400 text-center py-4">Loading…</p>
+          </div>
+        </section>
+
+        <!-- Stats modal — minutes practiced + top segments. -->
+        <div
+          id="stats-modal"
+          class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
+        >
+          <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-lg font-bold text-slate-900">Practice stats</h2>
+              <button id="stats-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+            </div>
+            <div class="mb-4">
+              <div class="text-xs text-slate-500 uppercase tracking-wide">Last 7 days</div>
+              <div id="stats-total" class="text-3xl font-bold text-slate-900">0 min</div>
+            </div>
+            <div class="mb-4">
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Daily minutes</h3>
+              <div id="stats-daily" class="flex items-end gap-1 h-24 border-b border-slate-200"></div>
+            </div>
+            <div>
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Most-drilled segments</h3>
+              <ol id="stats-top" class="text-sm text-slate-700 space-y-1"></ol>
+            </div>
           </div>
         </div>
 
@@ -682,7 +805,7 @@
             </div>
           </div>
 
-          <div class="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-4">
+          <div class="bg-white rounded-xl shadow-sm p-3 sm:p-4 flex flex-wrap items-center gap-3 sm:gap-4">
             <div class="flex items-center gap-2">
               <span class="text-sm font-medium text-slate-600">Speed</span>
               <div id="speed-controls" class="flex gap-1">

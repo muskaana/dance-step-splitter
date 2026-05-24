@@ -94,6 +94,27 @@ def init_auth(db_path: Path) -> None:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_share_invites_by_video ON share_invites(owner_id, video_id);
+
+            CREATE TABLE IF NOT EXISTS practice_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_plans_owner ON practice_plans(owner_id);
+
+            CREATE TABLE IF NOT EXISTS practice_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                video_id TEXT NOT NULL,
+                segment_id INTEGER,
+                duration_seconds REAL NOT NULL,
+                ended_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_practice_log_user_date
+                ON practice_log(user_id, ended_at);
             """
         )
 
@@ -410,6 +431,162 @@ def delete_share_invite(owner_id: int, token: str) -> bool:
             (owner_id, token),
         )
         return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Practice plans + activity log
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PracticePlan:
+    id: int
+    owner_id: int
+    name: str
+    items: list  # list of {"video_id": str, "rest_seconds": float}
+    created_at: str
+    updated_at: str
+
+
+def _plan_from_row(row) -> PracticePlan:
+    import json as _json
+    return PracticePlan(
+        id=row["id"],
+        owner_id=row["owner_id"],
+        name=row["name"],
+        items=_json.loads(row["items_json"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def create_plan(owner_id: int, name: str, items: list) -> PracticePlan:
+    import json as _json
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO practice_plans(owner_id, name, items_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (owner_id, name.strip()[:200] or "Untitled plan", _json.dumps(items), now, now),
+        )
+        plan_id = int(cur.lastrowid)
+    return PracticePlan(plan_id, owner_id, name, items, now, now)
+
+
+def list_plans(owner_id: int) -> list[PracticePlan]:
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT id, owner_id, name, items_json, created_at, updated_at
+               FROM practice_plans WHERE owner_id = ? ORDER BY updated_at DESC""",
+            (owner_id,),
+        ).fetchall()
+    return [_plan_from_row(r) for r in rows]
+
+
+def get_plan(owner_id: int, plan_id: int) -> Optional[PracticePlan]:
+    with _conn() as c:
+        row = c.execute(
+            """SELECT id, owner_id, name, items_json, created_at, updated_at
+               FROM practice_plans WHERE id = ? AND owner_id = ?""",
+            (plan_id, owner_id),
+        ).fetchone()
+    return _plan_from_row(row) if row else None
+
+
+def update_plan(
+    owner_id: int, plan_id: int, name: Optional[str], items: Optional[list]
+) -> Optional[PracticePlan]:
+    import json as _json
+    plan = get_plan(owner_id, plan_id)
+    if not plan:
+        return None
+    new_name = (name.strip()[:200] if name else plan.name) or plan.name
+    new_items = items if items is not None else plan.items
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as c:
+        c.execute(
+            """UPDATE practice_plans SET name = ?, items_json = ?, updated_at = ?
+               WHERE id = ? AND owner_id = ?""",
+            (new_name, _json.dumps(new_items), now, plan_id, owner_id),
+        )
+    return PracticePlan(plan.id, owner_id, new_name, new_items, plan.created_at, now)
+
+
+def delete_plan(owner_id: int, plan_id: int) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM practice_plans WHERE id = ? AND owner_id = ?",
+            (plan_id, owner_id),
+        )
+        return cur.rowcount > 0
+
+
+def record_practice(
+    user_id: int, video_id: str, segment_id: Optional[int], duration_seconds: float
+) -> None:
+    """Append a single practice-log entry. Cheap, called on each loop wrap."""
+    if duration_seconds <= 0:
+        return
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO practice_log(user_id, video_id, segment_id, duration_seconds, ended_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                video_id,
+                segment_id,
+                float(duration_seconds),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def stats_for_user(user_id: int, days: int = 7) -> dict:
+    """Return aggregate stats for the last `days` days."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        # Total seconds
+        total_row = c.execute(
+            "SELECT COALESCE(SUM(duration_seconds), 0) AS total FROM practice_log "
+            "WHERE user_id = ? AND ended_at >= ?",
+            (user_id, cutoff),
+        ).fetchone()
+        # Top segments
+        top_rows = c.execute(
+            """SELECT video_id, segment_id,
+                      COUNT(*) AS reps,
+                      SUM(duration_seconds) AS total
+               FROM practice_log
+               WHERE user_id = ? AND ended_at >= ?
+               GROUP BY video_id, segment_id
+               ORDER BY reps DESC LIMIT 10""",
+            (user_id, cutoff),
+        ).fetchall()
+        # Daily minutes (group by date)
+        daily_rows = c.execute(
+            """SELECT substr(ended_at, 1, 10) AS day,
+                      SUM(duration_seconds) AS total
+               FROM practice_log
+               WHERE user_id = ? AND ended_at >= ?
+               GROUP BY day ORDER BY day""",
+            (user_id, cutoff),
+        ).fetchall()
+    return {
+        "total_seconds": float(total_row["total"] or 0),
+        "top_segments": [
+            {
+                "video_id": r["video_id"],
+                "segment_id": r["segment_id"],
+                "reps": int(r["reps"]),
+                "total_seconds": float(r["total"]),
+            }
+            for r in top_rows
+        ],
+        "daily_seconds": [
+            {"day": r["day"], "seconds": float(r["total"])} for r in daily_rows
+        ],
+    }
 
 
 def find_any_share_for_video(video_id: str, recipient_id: int) -> Optional[Share]:
