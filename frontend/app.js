@@ -199,15 +199,24 @@ function applyKindGating() {
     el.classList.toggle("hidden", !singing);
   });
   if (singing) updateLyricsPanel();
+  // Webcam button visibility depends on both `memoryModeOn` AND the kind,
+  // so re-run the overlay sync to clean up after a kind switch.
+  if (typeof syncPlaybackOverlays === "function") syncPlaybackOverlays();
 }
 
-/** Drives the kind-toggle in the Add-a-video card (separate from the
-    currently-loaded entry's kind — this is what the *next* process will use). */
+/** Drives the kind-toggle in the Add-a-video card. While no entry is
+    loaded the pending choice also drives the surrounding UI (so dance-only
+    and singing-only controls flip live as the user clicks the toggle).
+    Once a real entry is loaded, that entry's stored kind takes over. */
 function setPendingKind(kind) {
   pendingKind = kind === "singing" ? "singing" : "dance";
   document.querySelectorAll(".kind-btn").forEach((b) => {
     b.classList.toggle("active", b.dataset.kind === pendingKind);
   });
+  if (!currentVideoId) {
+    currentEntryKind = pendingKind;
+    applyKindGating();
+  }
 }
 
 if (kindToggle) {
@@ -905,8 +914,8 @@ video.addEventListener("timeupdate", () => {
       workshopRepsEl.classList.add("rep-pulse");
 
       if (workshop.repsRemaining <= 0) {
-        // Phase done — break, then advance. `enterPhase` itself starts
-        // playback at the new phase's start.
+        // Phase done — break, then advance to the next drill. The break
+        // setting only applies BETWEEN drills, not between reps.
         if (breakMs > 0) {
           video.pause();
           loopBreakTimer = setTimeout(() => {
@@ -918,8 +927,13 @@ video.addEventListener("timeupdate", () => {
         }
         return;
       }
+      // Reps remaining → instant repeat. No break between reps of the same
+      // drill, regardless of the break setting.
+      snapLoopBack(0);
+      return;
     }
 
+    // Manual looping outside workshop mode uses the configured break.
     snapLoopBack(breakMs);
   }
 });
@@ -1016,9 +1030,14 @@ function syncPlaybackOverlays() {
   memoryOverlay.classList.toggle("hidden", !showLabel);
   memoryOverlay.classList.toggle("flex", showLabel);
 
-  // Webcam stream element + button state.
+  // Webcam stream element + button state. The button only appears as an
+  // option once Memory Mode is on, since the mirror only makes sense
+  // when the source video is hidden anyway. (The `dance-only` class still
+  // hides it on singing entries — that gating runs separately.)
   webcamVideo.classList.toggle("hidden", !webcamOn);
   if (webcamBtn) {
+    const isDanceEntry = currentEntryKind !== "singing";
+    webcamBtn.classList.toggle("hidden", !(memoryModeOn && isDanceEntry));
     webcamState.textContent = webcamOn ? "On" : "Off";
     webcamBtn.classList.toggle("bg-indigo-50", webcamOn);
     webcamBtn.classList.toggle("border-indigo-300", webcamOn);
@@ -1032,6 +1051,11 @@ function syncPlaybackOverlays() {
 
 memoryBtn.addEventListener("click", () => {
   memoryModeOn = !memoryModeOn;
+  // Turning Memory Mode off implicitly turns the webcam off too — the
+  // mirror only makes sense while you're hiding the source video.
+  if (!memoryModeOn && webcamStream) {
+    stopWebcam();
+  }
   syncPlaybackOverlays();
 });
 
