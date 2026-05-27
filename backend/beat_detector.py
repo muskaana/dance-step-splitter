@@ -109,17 +109,91 @@ def detect_beats(
     return BeatResult(bpm=bpm, beat_times=beat_times, duration=duration)
 
 
+def detect_beats_subprocess(
+    video_path: str | Path,
+    *,
+    crop_start: float | None = None,
+    crop_end: float | None = None,
+    timeout: float = 120.0,
+) -> BeatResult | None:
+    """Run `detect_beats` in a fresh child process and parse its JSON output.
+
+    librosa + numba together hold ~150-200 MB resident even after the call
+    returns, because numba's JIT cache and llvmlite live until interpreter
+    exit. Spawning a child means that memory is freed as soon as the child
+    exits, which keeps the long-running web worker's working set small —
+    important on Fly's 1 GB shared-cpu-1x machines where pose extraction
+    is already memory-heavy.
+
+    Returns None on detection failure or subprocess failure; callers should
+    treat this the same as "no usable beats" and fall back gracefully.
+    """
+    import sys
+    import json as _json
+
+    cmd = [sys.executable, "-m", "backend.beat_detector", "--json", str(video_path)]
+    if crop_start is not None:
+        cmd += ["--start", f"{crop_start:.3f}"]
+    if crop_end is not None:
+        cmd += ["--end", f"{crop_end:.3f}"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[beat] subprocess timed out for {video_path}")
+        return None
+    if proc.returncode != 0:
+        print(
+            f"[beat] subprocess failed for {video_path}: "
+            f"rc={proc.returncode} stderr={proc.stderr[:300]}"
+        )
+        return None
+    payload = (proc.stdout or "").strip()
+    if not payload or payload == "null":
+        return None
+    try:
+        data = _json.loads(payload)
+    except _json.JSONDecodeError:
+        print(f"[beat] subprocess produced invalid JSON: {payload[:200]}")
+        return None
+    return BeatResult(
+        bpm=float(data["bpm"]),
+        beat_times=[float(t) for t in data["beat_times"]],
+        duration=float(data["duration"]),
+    )
+
+
 if __name__ == "__main__":
     import argparse
+    import json as _json
 
     parser = argparse.ArgumentParser(description="Detect beats in a video file.")
     parser.add_argument("video", help="Path to video file")
     parser.add_argument("--start", type=float, default=None)
     parser.add_argument("--end", type=float, default=None)
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON (or 'null') on stdout — used by the in-process wrapper.",
+    )
     args = parser.parse_args()
 
     result = detect_beats(args.video, crop_start=args.start, crop_end=args.end)
-    if result is None:
+    if args.json:
+        if result is None:
+            print("null")
+        else:
+            print(_json.dumps({
+                "bpm": result.bpm,
+                "beat_times": result.beat_times,
+                "duration": result.duration,
+            }))
+    elif result is None:
         print("No beats detected.")
     else:
         print(f"BPM: {result.bpm:.1f}  beats: {len(result.beat_times)}  "

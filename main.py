@@ -422,7 +422,7 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         # dance mode because singing already uses musical-silence boundaries.
         if req.snap_to_beat and len(segments) >= 2:
             try:
-                beat_result = beat_detector.detect_beats(
+                beat_result = beat_detector.detect_beats_subprocess(
                     video_path,
                     crop_start=req.start_time,
                     crop_end=req.end_time,
@@ -589,7 +589,7 @@ def _run_file_pipeline(
 
         if snap_to_beat and len(segments) >= 2:
             try:
-                beat_result = beat_detector.detect_beats(
+                beat_result = beat_detector.detect_beats_subprocess(
                     video_path, crop_start=start_time, crop_end=end_time
                 )
             except Exception as exc:
