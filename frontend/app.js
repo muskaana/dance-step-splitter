@@ -3,6 +3,7 @@
 const video = document.getElementById("player");
 const segmentGrid = document.getElementById("segment-grid");
 const segmentCount = document.getElementById("segment-count");
+const selectAllSegmentsBtn = document.getElementById("select-all-segments-btn");
 const mirrorBtn = document.getElementById("mirror-btn");
 const memoryBtn = document.getElementById("memory-btn");
 const memoryState = document.getElementById("memory-state");
@@ -334,6 +335,7 @@ function renderSegments(segments) {
   }
   applySegmentsLayout(segments.length);
   renderQuickSegments(segments);
+  updateSelectAllSegmentsBtn();
 }
 
 // `applySegmentsLayout` was needed when segments lived in a right sidebar
@@ -380,6 +382,20 @@ function renderQuickSegments(segments) {
   restartSegmentBtn.classList.remove("hidden");
 
   quickSegmentsMenu.innerHTML = "";
+
+  // Sticky "Select all / Clear" header — same toggle as the sidebar button.
+  const allRow = document.createElement("button");
+  allRow.id = "quick-select-all";
+  allRow.className =
+    "w-full text-left text-xs px-2.5 py-1.5 hover:bg-indigo-50 flex items-center gap-2 border-b border-slate-200 font-semibold text-indigo-700 sticky top-0 bg-white";
+  allRow.innerHTML = `<span class="flex-1">Select all</span><span class="text-[10px] text-slate-400 font-normal">${segments.length}</span>`;
+  allRow.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (isEverySegmentSelected()) clearSelection();
+    else selectAllSegments();
+  });
+  quickSegmentsMenu.appendChild(allRow);
+
   for (const seg of segments) {
     const item = document.createElement("button");
     item.dataset.id = String(seg.id);
@@ -410,6 +426,11 @@ function updateQuickSegmentsState() {
     quickSegmentsLabel.textContent = selectedSegments[0].label;
   } else {
     quickSegmentsLabel.textContent = `${selectedSegments.length} selected`;
+  }
+  const allRow = quickSegmentsMenu.querySelector("#quick-select-all");
+  if (allRow) {
+    const label = allRow.querySelector("span");
+    if (label) label.textContent = isEverySegmentSelected() ? "Clear all" : "Select all";
   }
   const activeIds = new Set(selectedSegments.map((s) => String(s.id)));
   quickSegmentsMenu.querySelectorAll(".quick-seg").forEach((el) => {
@@ -489,11 +510,44 @@ function clearSelection() {
   onManualSelectionChanged();
 }
 
+function selectAllSegments() {
+  if (workshop.active) return; // workshop owns the loop
+  if (!allSegments.length) return;
+  selectedSegments = [...allSegments];
+  document
+    .querySelectorAll(".segment-btn")
+    .forEach((b) => b.classList.add("active"));
+  onManualSelectionChanged();
+}
+
+function isEverySegmentSelected() {
+  return (
+    allSegments.length > 0 &&
+    selectedSegments.length === allSegments.length
+  );
+}
+
+function updateSelectAllSegmentsBtn() {
+  if (!selectAllSegmentsBtn) return;
+  const hasAny = allSegments.length > 0;
+  selectAllSegmentsBtn.disabled = !hasAny || workshop.active;
+  selectAllSegmentsBtn.classList.toggle("opacity-40", !hasAny || workshop.active);
+  selectAllSegmentsBtn.textContent = isEverySegmentSelected() ? "Clear" : "Select all";
+}
+
+if (selectAllSegmentsBtn) {
+  selectAllSegmentsBtn.addEventListener("click", () => {
+    if (isEverySegmentSelected()) clearSelection();
+    else selectAllSegments();
+  });
+}
+
 function onManualSelectionChanged() {
   if (workshop.active) return; // workshop owns loopBounds
   loopBounds = calculateLoopBounds();
   resetCountBeat();
   segmentCount.textContent = `${selectedSegments.length} selected`;
+  updateSelectAllSegmentsBtn();
   if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
 
   if (loopBounds) {
@@ -582,6 +636,7 @@ function startWorkshop() {
   setSegmentsLocked(true);
   enterPhase(0);
   if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
+  updateSelectAllSegmentsBtn();
 
   video.play().catch(() => {});
 }
@@ -603,6 +658,7 @@ function stopWorkshop() {
   highlightWorkshopSegments([]);
   updateLoopDisplay();
   if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
+  updateSelectAllSegmentsBtn();
   // Pause playback so the video doesn't keep running once the user explicitly
   // ended the workshop session.
   try { video.pause(); } catch {}
