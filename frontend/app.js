@@ -1000,6 +1000,9 @@ function resetCountBeat() {
 let loopBreakTimer = null;
 let breakCountdownTimer = null;
 let breakEndAt = 0;
+/** Callback fired when the current break ends naturally OR is skipped by
+ *  the user. Set by `armBreak`, cleared by `cancelLoopBreak`. */
+let pendingBreakResume = null;
 const breakOverlay = document.getElementById("break-overlay");
 const breakCountdown = document.getElementById("break-countdown");
 
@@ -1008,6 +1011,10 @@ function showBreakOverlay(totalMs) {
   breakEndAt = Date.now() + totalMs;
   breakOverlay.classList.remove("hidden");
   breakOverlay.classList.add("flex");
+  // The overlay itself is the skip-affordance — tapping anywhere in it
+  // ends the break early and immediately runs whatever was queued.
+  breakOverlay.classList.remove("pointer-events-none");
+  breakOverlay.classList.add("cursor-pointer");
   // Tick the countdown ~10× per second so the number animates smoothly.
   if (breakCountdownTimer) clearInterval(breakCountdownTimer);
   const tick = () => {
@@ -1021,6 +1028,55 @@ function showBreakOverlay(totalMs) {
   tick();
   breakCountdownTimer = setInterval(tick, 100);
 }
+
+/** Arm a break: pause the video, show the overlay, and queue `resume` to
+ *  run after `ms` ms. Calling `skipLoopBreak()` (overlay click / spacebar)
+ *  runs `resume` immediately and clears the timer. */
+function armBreak(ms, resume) {
+  video.pause();
+  showBreakOverlay(ms);
+  pendingBreakResume = resume;
+  loopBreakTimer = setTimeout(() => {
+    loopBreakTimer = null;
+    hideBreakOverlay();
+    const r = pendingBreakResume;
+    pendingBreakResume = null;
+    if (r) r();
+  }, ms);
+}
+
+function skipLoopBreak() {
+  if (!loopBreakTimer) return; // no break in flight
+  clearTimeout(loopBreakTimer);
+  loopBreakTimer = null;
+  hideBreakOverlay();
+  const r = pendingBreakResume;
+  pendingBreakResume = null;
+  if (r) r();
+}
+
+// Override: tap the break overlay (or press Space) to resume immediately.
+if (breakOverlay) {
+  breakOverlay.addEventListener("click", (e) => {
+    e.stopPropagation();
+    skipLoopBreak();
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (!loopBreakTimer) return;
+  if (e.code !== "Space") return;
+  // Don't hijack Space while the user is typing in a text field.
+  const t = e.target;
+  if (
+    t instanceof HTMLInputElement ||
+    t instanceof HTMLTextAreaElement ||
+    (t && t.isContentEditable)
+  ) {
+    return;
+  }
+  e.preventDefault();
+  skipLoopBreak();
+});
 
 function hideBreakOverlay() {
   if (breakCountdownTimer) {
@@ -1038,6 +1094,7 @@ function cancelLoopBreak() {
     clearTimeout(loopBreakTimer);
     loopBreakTimer = null;
   }
+  pendingBreakResume = null;
   hideBreakOverlay();
 }
 
@@ -1049,7 +1106,8 @@ function currentLoopBreakSeconds() {
 
 /** Snap the playhead back to the loop start, respecting the user-configured
     break delay. During the break we pause the video; after the timeout
-    elapses we resume playback. */
+    elapses we resume playback. The break can be skipped early by tapping
+    the overlay or pressing Space (see `skipLoopBreak`). */
 function snapLoopBack(afterMs) {
   if (afterMs <= 0) {
     video.currentTime = loopBounds.start;
@@ -1057,18 +1115,14 @@ function snapLoopBack(afterMs) {
     if (video.paused) video.play().catch(() => {});
     return;
   }
-  video.pause();
-  showBreakOverlay(afterMs);
-  loopBreakTimer = setTimeout(() => {
-    loopBreakTimer = null;
-    hideBreakOverlay();
+  armBreak(afterMs, () => {
     // Loop bounds may have changed during the break (user cleared / picked
     // a different segment / workshop stopped) — bail out cleanly.
     if (!loopBounds) return;
     video.currentTime = loopBounds.start;
     resetCountBeat();
     video.play().catch(() => {});
-  }, afterMs);
+  });
 }
 
 video.addEventListener("timeupdate", () => {
@@ -1091,13 +1145,7 @@ video.addEventListener("timeupdate", () => {
         // Phase done — break, then advance to the next drill. The break
         // setting only applies BETWEEN drills, not between reps.
         if (breakMs > 0) {
-          video.pause();
-          showBreakOverlay(breakMs);
-          loopBreakTimer = setTimeout(() => {
-            loopBreakTimer = null;
-            hideBreakOverlay();
-            enterPhase(workshop.phaseIdx + 1);
-          }, breakMs);
+          armBreak(breakMs, () => enterPhase(workshop.phaseIdx + 1));
         } else {
           enterPhase(workshop.phaseIdx + 1);
         }

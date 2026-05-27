@@ -799,14 +799,16 @@
                  still switch segments mid-break. -->
             <div
               id="break-overlay"
-              class="hidden absolute inset-0 z-[8] items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none"
+              role="button"
+              title="Tap or press Space to skip the break"
+              class="hidden absolute inset-0 z-[8] items-center justify-center bg-black/60 backdrop-blur-sm cursor-pointer select-none"
             >
-              <div class="text-center">
+              <div class="text-center pointer-events-none">
                 <div class="text-xs uppercase tracking-[0.3em] text-white/70 mb-2">
                   Break
                 </div>
                 <div id="break-countdown" class="text-7xl font-bold text-white tabular-nums">5.0</div>
-                <div class="text-xs text-white/60 mt-2">Next loop starting…</div>
+                <div class="text-xs text-white/60 mt-2">Tap or press <kbd class="px-1 py-0.5 rounded bg-white/20 font-mono text-[10px]">Space</kbd> to skip</div>
               </div>
             </div>
 

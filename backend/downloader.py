@@ -114,9 +114,15 @@ def download_video(
     is_youtube = _is_youtube_url(url)
     # YouTube has DASH-style separate video+audio streams that we must merge to
     # get >360p, so we use a strict selector there. Other hosts (IG, TikTok)
-    # serve a single MP4 and our YT-tuned selector rejects them as "Requested
-    # format is not available" — use yt-dlp's default ("best") instead.
-    format_selector = build_format_selector(quality) if is_youtube else "best"
+    # mostly serve single combined MP4s, but Instagram occasionally splits
+    # audio and video into separate streams — "best" alone picks the best
+    # single file, which for those splits is a silent video. Prefer merged
+    # video+audio first, fall back to combined-best, fall back to anything.
+    format_selector = (
+        build_format_selector(quality)
+        if is_youtube
+        else "bestvideo*+bestaudio/best/bestvideo*"
+    )
 
     base_opts = {
         "format": format_selector,
