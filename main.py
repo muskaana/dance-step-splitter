@@ -393,10 +393,19 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         )
         pose_df = None
     else:
+        probed_duration = _probe_duration(video_path)
+        effective_sample = _auto_sample_rate(
+            probed_duration, req.start_time, req.end_time, req.sample_every_n_frames
+        )
+        if effective_sample != req.sample_every_n_frames:
+            print(
+                f"[pose] {video_id}: auto-sampling every {effective_sample} frames "
+                f"(requested {req.sample_every_n_frames}, duration={probed_duration})"
+            )
         pose_df = pose_extractor.extract_pose_landmarks(
             video_path,
             model_variant=req.model_variant,
-            sample_every_n_frames=req.sample_every_n_frames,
+            sample_every_n_frames=effective_sample,
             start_time=req.start_time,
             end_time=req.end_time,
         )
@@ -562,10 +571,19 @@ def _run_file_pipeline(
         )
         pose_df = None
     else:
+        probed_duration = _probe_duration(video_path)
+        effective_sample = _auto_sample_rate(
+            probed_duration, start_time, end_time, sample_every_n_frames
+        )
+        if effective_sample != sample_every_n_frames:
+            print(
+                f"[pose] {video_id}: auto-sampling every {effective_sample} frames "
+                f"(requested {sample_every_n_frames}, duration={probed_duration})"
+            )
         pose_df = pose_extractor.extract_pose_landmarks(
             video_path,
             model_variant=model_variant,
-            sample_every_n_frames=sample_every_n_frames,
+            sample_every_n_frames=effective_sample,
             start_time=start_time,
             end_time=end_time,
         )
@@ -664,6 +682,36 @@ def _run_file_pipeline(
         beat_snap_count=beat_info["moved"] if beat_info else None,
         beat_times=beat_info["beat_times"] if beat_info else None,
     )
+
+
+def _auto_sample_rate(
+    duration_s: Optional[float],
+    crop_start: Optional[float],
+    crop_end: Optional[float],
+    requested: int,
+) -> int:
+    """Pick `sample_every_n_frames` to bound pose-extraction memory on Fly.
+
+    The kinematic segmenter only cares about motion frequencies up to a few Hz
+    (dance moves), so dropping to 10-15 fps barely affects accuracy. But the
+    pose extractor's working set grows linearly with sampled frame count, and
+    Fly's 1 GB shared-cpu-1x VM can't fit a 3+ min @ 30 fps extraction in RAM.
+
+    Honour the caller if they explicitly asked for >1 (power-user override);
+    otherwise auto-downsample longer clips.
+    """
+    if requested > 1:
+        return requested
+    span = duration_s or 0.0
+    if crop_start is not None or crop_end is not None:
+        s = crop_start if crop_start is not None else 0.0
+        e = crop_end if crop_end is not None else (duration_s or 0.0)
+        span = max(0.0, e - s)
+    if span > 180:
+        return 3
+    if span > 90:
+        return 2
+    return 1
 
 
 def _probe_duration(path: Path) -> Optional[float]:

@@ -114,13 +114,27 @@ def extract_pose_landmarks(
         raise RuntimeError(f"Could not open video: {video_path}")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    rows: list[dict] = []
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     # Crop bounds — skip seeking + decoding outside [start_time, end_time].
     start_frame = int(max(0, (start_time or 0.0) * fps))
     end_frame = int((end_time * fps)) if end_time is not None else None
     if start_frame > 0:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    # Pre-allocate a typed numpy buffer instead of growing a Python list of
+    # dicts. A list of 200K small dicts costs ~160 MB of object overhead; the
+    # equivalent float32 array is ~26 MB — important on the 1 GB Fly VM.
+    upper_bound = end_frame if end_frame is not None else total_frames
+    sampled_estimate = max(
+        1, ((upper_bound - start_frame) + sample_every_n_frames - 1) // sample_every_n_frames
+    )
+    capacity = sampled_estimate + 16  # small headroom for fps rounding
+    buf_frame = np.zeros(capacity, dtype=np.int32)
+    buf_time = np.zeros(capacity, dtype=np.float32)
+    # (n_samples, 33, 4) — x, y, z, visibility per landmark.
+    buf_lm = np.zeros((capacity, NUM_LANDMARKS, 4), dtype=np.float32)
+    count = 0
 
     try:
         landmarker = _build_landmarker(
@@ -141,35 +155,33 @@ def extract_pose_landmarks(
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                     result = landmarker.detect_for_video(mp_image, int(timestamp * 1000))
 
+                    # Grow the buffer if our estimate was too low — handles
+                    # off-by-one cases where total_frames was inaccurate.
+                    if count >= capacity:
+                        new_cap = capacity * 2
+                        buf_frame = np.resize(buf_frame, new_cap)
+                        buf_time = np.resize(buf_time, new_cap)
+                        new_lm = np.zeros((new_cap, NUM_LANDMARKS, 4), dtype=np.float32)
+                        new_lm[:capacity] = buf_lm
+                        buf_lm = new_lm
+                        capacity = new_cap
+
+                    buf_frame[count] = frame_idx
+                    buf_time[count] = timestamp
+
                     if result.pose_landmarks:
                         landmarks = result.pose_landmarks[0]
                         for lm_id, lm in enumerate(landmarks):
-                            rows.append(
-                                {
-                                    "frame": frame_idx,
-                                    "timestamp": timestamp,
-                                    "landmark_id": lm_id,
-                                    "landmark_name": LANDMARK_NAMES[lm_id],
-                                    "x": lm.x,
-                                    "y": lm.y,
-                                    "z": lm.z,
-                                    "visibility": getattr(lm, "visibility", 1.0),
-                                }
-                            )
+                            buf_lm[count, lm_id, 0] = lm.x
+                            buf_lm[count, lm_id, 1] = lm.y
+                            buf_lm[count, lm_id, 2] = lm.z
+                            buf_lm[count, lm_id, 3] = getattr(lm, "visibility", 1.0)
                     else:
-                        for lm_id in range(NUM_LANDMARKS):
-                            rows.append(
-                                {
-                                    "frame": frame_idx,
-                                    "timestamp": timestamp,
-                                    "landmark_id": lm_id,
-                                    "landmark_name": LANDMARK_NAMES[lm_id],
-                                    "x": np.nan,
-                                    "y": np.nan,
-                                    "z": np.nan,
-                                    "visibility": 0.0,
-                                }
-                            )
+                        # Missing detection — mark as NaN coords, zero visibility.
+                        buf_lm[count, :, 0:3] = np.nan
+                        buf_lm[count, :, 3] = 0.0
+
+                    count += 1
 
                 frame_idx += 1
         finally:
@@ -177,7 +189,28 @@ def extract_pose_landmarks(
     finally:
         cap.release()
 
-    df = pd.DataFrame(rows)
+    if count == 0:
+        df = pd.DataFrame(columns=["frame", "timestamp", "landmark_id", "landmark_name", "x", "y", "z", "visibility"])
+    else:
+        # Expand the (n, 33, 4) buffer into long format only at the end —
+        # avoids holding both representations simultaneously.
+        n = count
+        repeats = np.tile(np.arange(NUM_LANDMARKS), n)
+        df = pd.DataFrame(
+            {
+                "frame": np.repeat(buf_frame[:n], NUM_LANDMARKS),
+                "timestamp": np.repeat(buf_time[:n], NUM_LANDMARKS),
+                "landmark_id": repeats,
+                "landmark_name": [LANDMARK_NAMES[i] for i in repeats],
+                "x": buf_lm[:n, :, 0].reshape(-1),
+                "y": buf_lm[:n, :, 1].reshape(-1),
+                "z": buf_lm[:n, :, 2].reshape(-1),
+                "visibility": buf_lm[:n, :, 3].reshape(-1),
+            }
+        )
+        # Free the big intermediate buffer before returning.
+        del buf_frame, buf_time, buf_lm
+
     df.attrs["fps"] = fps
     df.attrs["video_path"] = str(video_path)
     return df
