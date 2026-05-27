@@ -166,6 +166,13 @@ let currentPermission = "owner";
 let currentEntryKind = "dance";
 let pendingKind = "dance"; // what the kind-toggle is set to for next process
 
+/** Music beat data for the currently-loaded video. When non-null the count-
+    voice scheduler fires "1-2-3-…-8" on actual musical beats instead of
+    evenly-spaced fractions of the loop window. Populated from the process
+    response (immediately after detection) or from a library entry on load. */
+let currentBpm = null;
+let currentBeatTimes = null;
+
 /** Polling state for collaborative edit sync. While a video is open we ping
     /api/library/{video_id} every 15s; if `last_edited_at` changed since we
     last looked, we re-render the segments. */
@@ -546,6 +553,7 @@ if (selectAllSegmentsBtn) {
 function onManualSelectionChanged() {
   if (workshop.active) return; // workshop owns loopBounds
   loopBounds = calculateLoopBounds();
+  recomputeLoopBeats();
   resetCountBeat();
   segmentCount.textContent = `${selectedSegments.length} selected`;
   updateSelectAllSegmentsBtn();
@@ -656,6 +664,7 @@ function stopWorkshop() {
   setSegmentsLocked(false);
 
   loopBounds = null;
+  recomputeLoopBeats();
   highlightWorkshopSegments([]);
   updateLoopDisplay();
   if (typeof updateQuickSegmentsState === "function") updateQuickSegmentsState();
@@ -675,6 +684,7 @@ function enterPhase(idx) {
   workshop.repsRemaining = phase.targetReps;
 
   loopBounds = boundsForPhase(phase);
+  recomputeLoopBeats();
   resetCountBeat();
   workshopPhaseEl.textContent = phase.label;
   workshopProgressEl.textContent = `Phase ${idx + 1} of ${workshop.plan.length}`;
@@ -873,9 +883,35 @@ function playCount(beatIdx) {
  * advances at the playback rate — so the wall-clock interval between counts
  * scales perfectly: 0.5x video = 2× spacing, 2x video = ½ spacing.
  *
- * Splits the active loop window into 8 evenly spaced intervals and fires
- * count N when the playhead crosses interval N.
+ * Two modes:
+ *   1. Beat-driven (preferred): if `currentBeatTimes` is populated, count
+ *      N is fired when the playhead crosses each successive detected beat
+ *      that falls inside `loopBounds`. The first in-window beat becomes
+ *      count 1; subsequent counts wrap 1→2→…→8→1→2→… for as long as
+ *      the loop runs.
+ *   2. Fallback (no beat data): split the loop window into 8 evenly
+ *      spaced intervals and fire count N when the playhead crosses
+ *      interval N — original "best guess" behaviour.
  */
+
+/** Cached beats-in-window between scheduler ticks. Recomputed whenever
+ *  loopBounds or currentBeatTimes change. */
+let loopBeats = null;
+
+function recomputeLoopBeats() {
+  if (!loopBounds || !currentBeatTimes || !currentBeatTimes.length) {
+    loopBeats = null;
+    return;
+  }
+  // Tolerance: include beats very slightly inside/outside the bounds so the
+  // first/last counts don't get clipped by rounding (the snap window is 0.4s).
+  const tol = 0.05;
+  const inWindow = currentBeatTimes.filter(
+    (t) => t >= loopBounds.start - tol && t <= loopBounds.end + tol,
+  );
+  loopBeats = inWindow.length >= 2 ? inWindow : null;
+}
+
 function scheduleTick() {
   if (!counts.schedulerRunning) return;
 
@@ -886,17 +922,36 @@ function scheduleTick() {
     !video.paused &&
     !video.ended
   ) {
-    const duration = loopBounds.end - loopBounds.start;
-    if (duration > 0) {
-      const beatDur = duration / 8;
-      const elapsed = video.currentTime - loopBounds.start;
-      let idx = Math.floor(elapsed / beatDur);
-      if (idx >= 0 && idx < 8) {
-        // Detect wrap (loop snapped back) or seek-backward.
+    const t = video.currentTime;
+
+    if (loopBeats && loopBeats.length >= 2) {
+      // Find which beat we're past. lastBeatIdx tracks the most recently
+      // fired *beat index* within loopBeats — not the 0-7 count number.
+      let idx = -1;
+      for (let i = 0; i < loopBeats.length; i++) {
+        if (t >= loopBeats[i]) idx = i;
+        else break;
+      }
+      if (idx >= 0) {
+        // Loop wrapped: playhead jumped backward → reset.
         if (idx < counts.lastBeatIdx) counts.lastBeatIdx = -1;
         if (idx !== counts.lastBeatIdx) {
-          playCount(idx);
+          playCount(idx % 8);  // cycle 1..8 across beats
           counts.lastBeatIdx = idx;
+        }
+      }
+    } else {
+      const duration = loopBounds.end - loopBounds.start;
+      if (duration > 0) {
+        const beatDur = duration / 8;
+        const elapsed = t - loopBounds.start;
+        let idx = Math.floor(elapsed / beatDur);
+        if (idx >= 0 && idx < 8) {
+          if (idx < counts.lastBeatIdx) counts.lastBeatIdx = -1;
+          if (idx !== counts.lastBeatIdx) {
+            playCount(idx);
+            counts.lastBeatIdx = idx;
+          }
         }
       }
     }
@@ -1816,6 +1871,8 @@ function applyProcessResponse(data) {
   // A freshly processed video is always owned by the requesting user.
   currentPermission = "owner";
   currentEntryKind = data.kind || pendingKind || "dance";
+  currentBpm = data.bpm ?? null;
+  currentBeatTimes = Array.isArray(data.beat_times) ? data.beat_times : null;
   applyPermissionGating();
   applyKindGating();
   renderSegments(allSegments);
@@ -2115,6 +2172,7 @@ function renderEditor() {
     row.querySelector(".ed-play").addEventListener("click", () => {
       video.currentTime = seg.start;
       loopBounds = { start: seg.start, end: seg.end };
+      recomputeLoopBeats();
       resetCountBeat();
       updateLoopDisplay();
       video.play().catch(() => {});
@@ -2541,6 +2599,8 @@ async function loadLibraryEntry(videoId, { autoStartWorkshop = false } = {}) {
     currentVideoId = data.video_id;
     currentPermission = data.permission || "owner";
     currentEntryKind = data.kind || "dance";
+    currentBpm = data.bpm ?? null;
+    currentBeatTimes = Array.isArray(data.beat_times) ? data.beat_times : null;
       applyPermissionGating();
     applyKindGating();
     youtubeUrlInput.value = data.source_url || "";

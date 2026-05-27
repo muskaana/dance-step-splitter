@@ -169,8 +169,15 @@ def _record_library_entry(
     crop_end: Optional[float] = None,
     kind: str = "dance",
     parent_video_id: Optional[str] = None,
+    bpm: Optional[float] = None,
+    beat_times: Optional[list[float]] = None,
 ) -> dict:
-    """Upsert a library entry. Most-recent processing of a given video_id wins."""
+    """Upsert a library entry. Most-recent processing of a given video_id wins.
+
+    `bpm` + `beat_times` are populated for dance entries that had beat detection
+    enabled. They drive the count-voice scheduler on the client so 1-2-3-4-…
+    lands on actual musical beats instead of evenly-spaced fractions of a loop.
+    """
     items = _read_library(user_id)
     items = [i for i in items if i.get("video_id") != video_id]
     now = datetime.now(timezone.utc).isoformat()
@@ -188,6 +195,11 @@ def _record_library_entry(
         "crop_end": crop_end,
         "kind": kind,
         "parent_video_id": parent_video_id,
+        # Optional beat data — only present when snap_to_beat was enabled and
+        # librosa returned a usable result. ~4-8 bytes per beat, so a 4-minute
+        # song at 120 BPM adds ~4 KB to library.json. Acceptable.
+        "bpm": bpm,
+        "beat_times": beat_times,
     }
     items.insert(0, entry)
     _write_library(user_id, items)
@@ -299,6 +311,7 @@ class ProcessResponse(BaseModel):
     # disabled or if beat detection produced no usable result.
     bpm: Optional[float] = None
     beat_snap_count: Optional[int] = None  # how many boundaries actually moved
+    beat_times: Optional[list[float]] = None  # absolute seconds, used for counts
 
 
 def _load_tuning_examples(
@@ -430,7 +443,11 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
                 moved = sum(
                     1 for a, b in zip(before, after) if abs(a - b) > 1e-3
                 )
-                beat_info = {"bpm": beat_result.bpm, "moved": moved}
+                beat_info = {
+                    "bpm": beat_result.bpm,
+                    "moved": moved,
+                    "beat_times": beat_result.beat_times,
+                }
                 print(
                     f"[beat] {video_id}: bpm={beat_result.bpm:.1f} "
                     f"boundaries_moved={moved}/{len(before)}"
@@ -467,6 +484,8 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         crop_start=req.start_time,
         crop_end=req.end_time,
         kind=req.kind,
+        bpm=beat_info["bpm"] if beat_info else None,
+        beat_times=beat_info["beat_times"] if beat_info else None,
     )
 
     return ProcessResponse(
@@ -486,6 +505,7 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         ),
         bpm=beat_info["bpm"] if beat_info else None,
         beat_snap_count=beat_info["moved"] if beat_info else None,
+        beat_times=beat_info["beat_times"] if beat_info else None,
     )
 
 
@@ -588,7 +608,11 @@ def _run_file_pipeline(
                     for a, b in zip(before, [s.end_time for s in segments[:-1]])
                     if abs(a - b) > 1e-3
                 )
-                beat_info = {"bpm": beat_result.bpm, "moved": moved}
+                beat_info = {
+                    "bpm": beat_result.bpm,
+                    "moved": moved,
+                    "beat_times": beat_result.beat_times,
+                }
                 print(
                     f"[beat] {video_id}: bpm={beat_result.bpm:.1f} "
                     f"boundaries_moved={moved}/{len(before)}"
@@ -618,6 +642,8 @@ def _run_file_pipeline(
         crop_start=start_time,
         crop_end=end_time,
         kind=kind,
+        bpm=beat_info["bpm"] if beat_info else None,
+        beat_times=beat_info["beat_times"] if beat_info else None,
     )
 
     return ProcessResponse(
@@ -636,6 +662,7 @@ def _run_file_pipeline(
         ),
         bpm=beat_info["bpm"] if beat_info else None,
         beat_snap_count=beat_info["moved"] if beat_info else None,
+        beat_times=beat_info["beat_times"] if beat_info else None,
     )
 
 
@@ -1157,6 +1184,17 @@ async def get_practice_stats(
     return JSONResponse(auth.stats_for_user(user.id, days))
 
 
+def _strip_list_only_fields(entry: dict) -> dict:
+    """Drop heavyweight fields that the list view doesn't need.
+
+    `beat_times` can be a few hundred floats per video — fine on the per-entry
+    endpoint, but multiplied across a user's whole library it bloats the list
+    payload. Frontend re-fetches the entry detail when actually loading a
+    video, so we only keep `bpm` (small, useful for badges) in list view.
+    """
+    return {k: v for k, v in entry.items() if k != "beat_times"}
+
+
 @app.get("/api/library")
 async def list_library(
     user: auth.User = Depends(get_current_user),
@@ -1168,7 +1206,7 @@ async def list_library(
     for entry in _read_library(user.id):
         out.append(
             {
-                **_normalize_video_url(entry, user.id),
+                **_strip_list_only_fields(_normalize_video_url(entry, user.id)),
                 "permission": "owner",
                 "owner_id": user.id,
             }
@@ -1186,7 +1224,7 @@ async def list_library(
         owner = auth.get_user(share.owner_id)
         out.append(
             {
-                **_normalize_video_url(owner_entry, share.owner_id),
+                **_strip_list_only_fields(_normalize_video_url(owner_entry, share.owner_id)),
                 "permission": share.permission,
                 "owner_id": share.owner_id,
                 "shared_by_username": owner.username if owner else None,
