@@ -4,6 +4,7 @@ const video = document.getElementById("player");
 const segmentGrid = document.getElementById("segment-grid");
 const segmentCount = document.getElementById("segment-count");
 const selectAllSegmentsBtn = document.getElementById("select-all-segments-btn");
+const snapToBeatInput = document.getElementById("snap-to-beat");
 const mirrorBtn = document.getElementById("mirror-btn");
 const memoryBtn = document.getElementById("memory-btn");
 const memoryState = document.getElementById("memory-state");
@@ -1753,7 +1754,12 @@ youtubeQualitySelect.addEventListener("change", updateProcessSubtitle);
 /* ---------- API helpers ---------- */
 
 async function processYouTube(url, crop) {
-  const body = { url, quality: youtubeQualitySelect.value, kind: pendingKind };
+  const body = {
+    url,
+    quality: youtubeQualitySelect.value,
+    kind: pendingKind,
+    snap_to_beat: pendingKind === "dance" && !!snapToBeatInput?.checked,
+  };
   if (crop) {
     body.start_time = crop.start;
     body.end_time = crop.end;
@@ -1774,6 +1780,9 @@ async function processFile(file, crop) {
   const form = new FormData();
   form.append("file", file);
   form.append("kind", pendingKind);
+  if (pendingKind === "dance" && snapToBeatInput?.checked) {
+    form.append("snap_to_beat", "true");
+  }
   if (crop) {
     form.append("start_time", String(crop.start));
     form.append("end_time", String(crop.end));
@@ -1823,6 +1832,10 @@ function applyProcessResponse(data) {
   }
   if (data.tuning && data.tuning.example_count > 0) {
     msg += ` ✨ Tuned from your last ${data.tuning.example_count} edited ${data.tuning.example_count === 1 ? "video" : "videos"}.`;
+  }
+  if (data.bpm) {
+    const moved = data.beat_snap_count || 0;
+    msg += ` 🎵 ${Math.round(data.bpm)} BPM — snapped ${moved} boundar${moved === 1 ? "y" : "ies"} to the beat.`;
   }
   showProcessingSuccess(msg);
   // Reduce clutter once the user has a real video on screen.

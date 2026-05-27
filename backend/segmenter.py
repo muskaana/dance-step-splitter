@@ -17,6 +17,7 @@ Approach — dynamic kinematic thresholding:
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, asdict
 from typing import Iterable, Optional
 
@@ -387,6 +388,90 @@ def segment_steps(
 def segments_to_dataframe(segments: list[StepSegment]) -> pd.DataFrame:
     """Convert step segments to a tidy DataFrame for export."""
     return pd.DataFrame([s.to_dict() for s in segments])
+
+
+# ---------------------------------------------------------------------------
+# Beat-snapping
+# ---------------------------------------------------------------------------
+
+
+def _nearest_beat(beats: list[float], t: float) -> Optional[float]:
+    """Return the beat time closest to `t`, or None if `beats` is empty."""
+    if not beats:
+        return None
+    idx = bisect.bisect_left(beats, t)
+    candidates: list[float] = []
+    if idx < len(beats):
+        candidates.append(beats[idx])
+    if idx > 0:
+        candidates.append(beats[idx - 1])
+    return min(candidates, key=lambda b: abs(b - t))
+
+
+def snap_to_beats(
+    segments: list[StepSegment],
+    beat_times: list[float],
+    window: float = 0.4,
+    min_kept_duration: float = 1.5,
+) -> list[StepSegment]:
+    """Shift each internal segment boundary onto the nearest detected beat.
+
+    The first segment's start and the last segment's end are left untouched
+    (they're crop boundaries, not motion-derived). Adjacent segments share
+    a boundary, so moving one boundary lengthens one segment and shortens
+    its neighbour — `min_kept_duration` guards against snapping a boundary
+    so far that the resulting segment becomes uselessly short.
+
+    Args:
+        segments: motion-derived segments, in order, chained
+            (segments[i].end_time == segments[i+1].start_time).
+        beat_times: absolute beat timestamps in seconds (sorted or not).
+        window: maximum distance, in seconds, a boundary may be shifted.
+            Boundaries with no beat within `window` are left as-is.
+        min_kept_duration: don't snap if doing so would shrink either
+            adjacent segment below this many seconds.
+    """
+    if not segments or not beat_times or len(segments) < 2:
+        return segments
+
+    beats = sorted(float(b) for b in beat_times)
+
+    # Walk the boundaries left-to-right, keeping a running "previous start" so
+    # we never let a snap collapse the segment we just moved into.
+    new_times: list[float] = [segments[0].start_time]
+    for i in range(len(segments) - 1):
+        boundary = segments[i].end_time
+        nearest = _nearest_beat(beats, boundary)
+        snapped = boundary
+        if nearest is not None and abs(nearest - boundary) <= window:
+            prev_start = new_times[-1]
+            next_end = segments[i + 1].end_time
+            if (nearest - prev_start) >= min_kept_duration and (
+                next_end - nearest
+            ) >= min_kept_duration:
+                snapped = nearest
+        new_times.append(snapped)
+    new_times.append(segments[-1].end_time)
+
+    out: list[StepSegment] = []
+    for i, old in enumerate(segments):
+        start = new_times[i]
+        end = new_times[i + 1]
+        out.append(
+            StepSegment(
+                index=i,
+                start_time=start,
+                end_time=end,
+                # Frame indices are an approximation after snapping — the
+                # downstream sequence builder only reads start_time/end_time
+                # so this is acceptable. Keep the originals as a sane default.
+                start_frame=old.start_frame,
+                end_frame=old.end_frame,
+                duration=end - start,
+                peak_motion=old.peak_motion,
+            )
+        )
+    return out
 
 
 if __name__ == "__main__":

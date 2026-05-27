@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from backend import (
     audio_segmenter,
     auth,
+    beat_detector,
     downloader,
     pose_extractor,
     segmenter,
@@ -272,6 +273,11 @@ class ProcessRequest(BaseModel):
     cookies_from_browser: Optional[Literal["safari", "chrome", "firefox", "edge", "brave"]] = None
     start_time: Optional[float] = Field(default=None, ge=0)
     end_time: Optional[float] = Field(default=None, gt=0)
+    # Dance mode only — after motion-based segmentation, nudge each segment
+    # boundary onto the nearest detected music beat (within ±0.4s by default).
+    # Off by default so existing behaviour is preserved unless the user
+    # opts in from the UI.
+    snap_to_beat: bool = False
 
 
 class TuningInfo(BaseModel):
@@ -289,6 +295,10 @@ class ProcessResponse(BaseModel):
     # Actual resolution we ended up with (after YouTube's player-client
     # fallback chain). Null for uploaded files since we have no metadata.
     height: Optional[int] = None
+    # Beat-detection results, when snap_to_beat was requested. Null if
+    # disabled or if beat detection produced no usable result.
+    bpm: Optional[float] = None
+    beat_snap_count: Optional[int] = None  # how many boundaries actually moved
 
 
 def _load_tuning_examples(
@@ -359,6 +369,7 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
     #    - dance → pose extraction + kinematic segmenter (existing flow)
     #    - singing → audio silence-detection (no MediaPipe, much faster)
     tuning_result = None
+    beat_info: Optional[dict] = None
     if req.kind == "singing":
         segments = audio_segmenter.segment_by_audio(
             video_path,
@@ -393,6 +404,41 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
             crop_end=req.end_time,
             **seg_params,
         )
+
+        # Beat-snapping post-pass — opt-in via the UI checkbox. Runs only for
+        # dance mode because singing already uses musical-silence boundaries.
+        if req.snap_to_beat and len(segments) >= 2:
+            try:
+                beat_result = beat_detector.detect_beats(
+                    video_path,
+                    crop_start=req.start_time,
+                    crop_end=req.end_time,
+                )
+            except Exception as exc:
+                # Beat detection is best-effort — never let it fail the run.
+                print(f"[beat] detection failed for {video_id}: {exc}")
+                beat_result = None
+            if beat_result is not None:
+                before = [s.end_time for s in segments[:-1]]
+                segments = segmenter.snap_to_beats(
+                    segments,
+                    beat_result.beat_times,
+                    window=0.4,
+                    min_kept_duration=max(1.5, seg_params["min_segment_duration"] * 0.5),
+                )
+                after = [s.end_time for s in segments[:-1]]
+                moved = sum(
+                    1 for a, b in zip(before, after) if abs(a - b) > 1e-3
+                )
+                beat_info = {"bpm": beat_result.bpm, "moved": moved}
+                print(
+                    f"[beat] {video_id}: bpm={beat_result.bpm:.1f} "
+                    f"boundaries_moved={moved}/{len(before)}"
+                )
+            else:
+                beat_info = None
+        else:
+            beat_info = None
 
     # 4. Build clean sequence + persist to the user's data folder
     sequence, _ = sequence_builder.build_and_save(
@@ -438,6 +484,8 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
             if tuning_result is not None
             else None
         ),
+        bpm=beat_info["bpm"] if beat_info else None,
+        beat_snap_count=beat_info["moved"] if beat_info else None,
     )
 
 
@@ -473,6 +521,7 @@ def _run_file_pipeline(
     end_time: Optional[float] = None,
     original_filename: Optional[str] = None,
     kind: str = "dance",
+    snap_to_beat: bool = False,
 ) -> ProcessResponse:
     """Same as `_run_pipeline` but skipping the download step."""
     user_data = user_data_dir(user_id)
@@ -482,6 +531,7 @@ def _run_file_pipeline(
     )
 
     tuning_result = None
+    beat_info: Optional[dict] = None
     if kind == "singing":
         segments = audio_segmenter.segment_by_audio(
             video_path,
@@ -516,6 +566,34 @@ def _run_file_pipeline(
             crop_end=end_time,
             **seg_params,
         )
+
+        if snap_to_beat and len(segments) >= 2:
+            try:
+                beat_result = beat_detector.detect_beats(
+                    video_path, crop_start=start_time, crop_end=end_time
+                )
+            except Exception as exc:
+                print(f"[beat] detection failed for {video_id}: {exc}")
+                beat_result = None
+            if beat_result is not None:
+                before = [s.end_time for s in segments[:-1]]
+                segments = segmenter.snap_to_beats(
+                    segments,
+                    beat_result.beat_times,
+                    window=0.4,
+                    min_kept_duration=max(1.5, seg_params["min_segment_duration"] * 0.5),
+                )
+                moved = sum(
+                    1
+                    for a, b in zip(before, [s.end_time for s in segments[:-1]])
+                    if abs(a - b) > 1e-3
+                )
+                beat_info = {"bpm": beat_result.bpm, "moved": moved}
+                print(
+                    f"[beat] {video_id}: bpm={beat_result.bpm:.1f} "
+                    f"boundaries_moved={moved}/{len(before)}"
+                )
+
     sequence, _ = sequence_builder.build_and_save(
         segments, filename="sequence.json", data_dir=user_data
     )
@@ -556,6 +634,8 @@ def _run_file_pipeline(
             if tuning_result is not None
             else None
         ),
+        bpm=beat_info["bpm"] if beat_info else None,
+        beat_snap_count=beat_info["moved"] if beat_info else None,
     )
 
 
@@ -809,6 +889,7 @@ async def process_video_file(
     start_time: Optional[float] = Form(None),
     end_time: Optional[float] = Form(None),
     kind: Literal["dance", "singing"] = Form("dance"),
+    snap_to_beat: bool = Form(False),
     user: auth.User = Depends(get_current_user),
 ) -> ProcessResponse:
     """Run the pose / segment / sequence pipeline on a user-uploaded video."""
@@ -836,6 +917,7 @@ async def process_video_file(
             end_time,
             file.filename,
             kind,
+            snap_to_beat,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")

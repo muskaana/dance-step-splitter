@@ -6,6 +6,9 @@ FROM python:3.11-slim
 #  - libgles2, libegl1: needed by MediaPipe's pose landmarker (uses OpenGL ES).
 #  - libsm6, libxext6, libxrender1: opencv runtime dependencies that some
 #    distros leave out of slim images.
+#  - libsndfile1: soundfile (librosa's audio I/O) loads it at import time.
+#    Modern PyPI wheels bundle a copy, but keeping the system one is a
+#    belt-and-suspenders fallback on slim images.
 #  - curl: lets us pre-fetch the MediaPipe pose model into the image so we
 #    don't re-download it on every container start.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libsm6 \
         libxext6 \
         libxrender1 \
+        libsndfile1 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 

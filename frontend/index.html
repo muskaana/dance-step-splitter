@@ -566,6 +566,19 @@
             <ul id="upload-file-list" class="hidden space-y-1"></ul>
           </div>
 
+          <!-- Beat-snap option (dance only): after motion-based segmentation,
+               nudge boundaries onto the nearest music beat. Tiny extra cost
+               (~2-3s of librosa beat tracking), often makes segments feel
+               more musical / 8-count aligned. -->
+          <label
+            id="snap-to-beat-row"
+            class="dance-only flex items-center gap-2 text-xs text-slate-700 border-t border-slate-200 pt-3 cursor-pointer"
+          >
+            <input id="snap-to-beat" type="checkbox" checked class="w-4 h-4 accent-indigo-600" />
+            <span class="font-medium">Snap segment boundaries to music beats</span>
+            <span class="text-[10px] text-slate-500">(uses detected BPM; falls back to motion-only if no beat is found)</span>
+          </label>
+
           <!-- Crop row: always visible. Inputs are inert until a video loads
                (Remote URLs can be cropped on the second pass; locally-picked
                 files unlock cropping immediately on preview). -->

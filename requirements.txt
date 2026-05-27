@@ -6,4 +6,5 @@ uvicorn
 python-multipart
 pandas
 numpy
-anthropic
+librosa
+soundfile
