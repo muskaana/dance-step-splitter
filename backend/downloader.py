@@ -1,11 +1,26 @@
-"""YouTube video downloader using yt-dlp."""
+"""Video downloader using yt-dlp.
+
+Supports YouTube, Instagram Reels, TikTok, and anything else yt-dlp's default
+extractors handle. YouTube needs an aggressive player-client fallback chain
+because YT periodically breaks individual clients; other hosts use yt-dlp's
+default behaviour.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import yt_dlp
+
+
+def _is_youtube_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host.endswith("youtube.com") or host == "youtu.be" or host.endswith(".youtu.be")
 
 Quality = Literal["480p", "720p", "1080p"]
 
@@ -80,8 +95,15 @@ def download_video(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    is_youtube = _is_youtube_url(url)
+    # YouTube has DASH-style separate video+audio streams that we must merge to
+    # get >360p, so we use a strict selector there. Other hosts (IG, TikTok)
+    # serve a single MP4 and our YT-tuned selector rejects them as "Requested
+    # format is not available" — use yt-dlp's default ("best") instead.
+    format_selector = build_format_selector(quality) if is_youtube else "best"
+
     base_opts = {
-        "format": build_format_selector(quality),
+        "format": format_selector,
         "outtmpl": str(out_dir / filename_template),
         "merge_output_format": "mp4",
         "quiet": True,
@@ -102,34 +124,44 @@ def download_video(
     )
     attempts: list[dict] = []
 
-    # Highest-priority: a Netscape-format cookies.txt that authenticates as a
-    # real signed-in YouTube account. This is the cleanest way to dodge YT's
-    # cloud-IP throttling on Fly.
     cookies_path = Path(cookies_file) if cookies_file else None
-    if cookies_path and cookies_path.exists():
-        attempts.append(
-            {
-                "cookiefile": str(cookies_path),
-                "extractor_args": {
-                    "youtube": {"player_client": ["web", "ios", "android"]}
-                },
-            }
-        )
 
-    for clients in _PLAYER_CLIENT_FALLBACKS:
-        attempts.append(
-            {"extractor_args": {"youtube": {"player_client": list(clients)}}}
-        )
-    # Browser cookies (only useful locally — Fly can't read your Mac browser).
-    for browser in cookie_browsers:
-        attempts.append(
-            {
-                "cookiesfrombrowser": (browser,),
-                "extractor_args": {
-                    "youtube": {"player_client": ["web", "ios", "android"]}
-                },
-            }
-        )
+    if is_youtube:
+        # Highest-priority: a Netscape-format cookies.txt that authenticates as a
+        # real signed-in YouTube account. This is the cleanest way to dodge YT's
+        # cloud-IP throttling on Fly.
+        if cookies_path and cookies_path.exists():
+            attempts.append(
+                {
+                    "cookiefile": str(cookies_path),
+                    "extractor_args": {
+                        "youtube": {"player_client": ["web", "ios", "android"]}
+                    },
+                }
+            )
+        for clients in _PLAYER_CLIENT_FALLBACKS:
+            attempts.append(
+                {"extractor_args": {"youtube": {"player_client": list(clients)}}}
+            )
+        # Browser cookies (only useful locally — Fly can't read your Mac browser).
+        for browser in cookie_browsers:
+            attempts.append(
+                {
+                    "cookiesfrombrowser": (browser,),
+                    "extractor_args": {
+                        "youtube": {"player_client": ["web", "ios", "android"]}
+                    },
+                }
+            )
+    else:
+        # Non-YouTube (Instagram, TikTok, etc.): yt-dlp's default extractors
+        # handle these without per-client juggling. Still try cookies if
+        # available, since IG/TikTok also gate some content behind login.
+        if cookies_path and cookies_path.exists():
+            attempts.append({"cookiefile": str(cookies_path)})
+        attempts.append({})
+        for browser in cookie_browsers:
+            attempts.append({"cookiesfrombrowser": (browser,)})
 
     last_error: Exception | None = None
     for extra in attempts:
@@ -169,10 +201,16 @@ def download_video(
             last_error = e
             continue
 
+    if is_youtube:
+        raise RuntimeError(
+            "Could not download video — YouTube blocked every player client and no "
+            "usable browser cookies were found. Try signing into YouTube in Safari "
+            f"or Chrome on this machine, then retry. Last error: {last_error}"
+        )
     raise RuntimeError(
-        "Could not download video — YouTube blocked every player client and no "
-        "usable browser cookies were found. Try signing into YouTube in Safari "
-        f"or Chrome on this machine, then retry. Last error: {last_error}"
+        f"Could not download video from {url}. yt-dlp failed even with fallback "
+        f"cookies. The post may be private, deleted, or region-locked. "
+        f"Last error: {last_error}"
     )
 
 

@@ -135,6 +135,26 @@ def _write_library(user_id: int, items: list[dict]) -> None:
     user_library_path(user_id).write_text(json.dumps(items, indent=2))
 
 
+def _classify_source(url: str) -> str:
+    """Map a remote URL to a short source tag for library entries.
+
+    Frontend uses the tag to colour the badge on each library card.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return "url"
+    if host.endswith("youtube.com") or host == "youtu.be" or host.endswith(".youtu.be"):
+        return "youtube"
+    if host.endswith("instagram.com"):
+        return "instagram"
+    if host.endswith("tiktok.com"):
+        return "tiktok"
+    return "url"
+
+
 def _record_library_entry(
     user_id: int,
     video_id: str,
@@ -396,7 +416,7 @@ def _run_pipeline(req: ProcessRequest, user_id: int) -> ProcessResponse:
         title=title,
         duration=duration,
         segment_count=len(sequence),
-        source="youtube",
+        source=_classify_source(str(req.url)),
         source_url=str(req.url),
         crop_start=req.start_time,
         crop_end=req.end_time,

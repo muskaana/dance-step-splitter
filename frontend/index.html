@@ -186,7 +186,7 @@
       id="tutorial-overlay"
       class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
     >
-      <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-4 sm:p-6 max-h-[90vh] overflow-y-auto">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-bold text-slate-900">How it works</h2>
           <button id="tutorial-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
@@ -197,8 +197,8 @@
             <div>
               <h3 class="font-semibold text-slate-900">Add a video</h3>
               <p class="text-sm text-slate-600">
-                Choose <em>💃 Dance</em> or <em>🎤 Sing</em>, then paste a YouTube URL or upload a file. Dance uses body-motion detection to find moves; Sing uses audio silences to find verses/choruses.
-                For best quality on YouTube content, download the source yourself and use Upload.
+                Choose <em>💃 Dance</em> or <em>🎤 Sing</em>, then paste a video URL (YouTube, Instagram Reel, or TikTok) or upload a file. Dance uses body-motion detection to find moves; Sing uses audio silences to find verses/choruses.
+                For best quality, download the source yourself and use Upload.
               </p>
             </div>
           </li>
@@ -265,7 +265,7 @@
       id="share-modal"
       class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
     >
-      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5 sm:p-6 max-h-[90vh] overflow-y-auto">
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-lg font-bold text-slate-900">Share video</h2>
           <button id="share-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
@@ -420,7 +420,7 @@
           id="stats-modal"
           class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
         >
-          <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+          <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-4 sm:p-6 max-h-[90vh] overflow-y-auto">
             <div class="flex items-center justify-between mb-4">
               <h2 class="text-lg font-bold text-slate-900">Practice stats</h2>
               <button id="stats-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
@@ -504,7 +504,7 @@
             <div class="min-w-0">
               <h2 class="text-sm font-semibold text-slate-900">Add a video</h2>
               <p id="add-video-tagline" class="text-xs text-slate-500">
-                Paste a YouTube link or upload a file, optionally crop, then process.
+                Paste a video URL (YouTube, Instagram, TikTok) or upload a file, optionally crop, then process.
               </p>
             </div>
             <div class="flex items-center gap-2 flex-wrap">
@@ -513,7 +513,7 @@
                 <button data-kind="singing" class="kind-btn px-3 py-1.5 hover:bg-slate-100 border-l border-slate-300">🎤 Sing</button>
               </div>
               <div id="source-toggle" class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs">
-                <button data-source="youtube" class="source-btn active px-3 py-1.5 hover:bg-slate-100">YouTube URL</button>
+                <button data-source="youtube" class="source-btn active px-3 py-1.5 hover:bg-slate-100">Video URL</button>
                 <button data-source="upload" class="source-btn px-3 py-1.5 hover:bg-slate-100 border-l border-slate-300">Upload file</button>
               </div>
               <button
@@ -532,8 +532,8 @@
               <input
                 id="youtube-url"
                 type="url"
-                placeholder="https://www.youtube.com/watch?v=…"
-                class="flex-1 min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="YouTube, Instagram Reel, or TikTok URL…"
+                class="flex-1 min-w-[180px] sm:min-w-[260px] px-3 py-2 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <select
                 id="youtube-quality"
@@ -546,11 +546,11 @@
             </div>
             <p class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 flex items-start gap-1.5">
               <span class="font-semibold">Heads up:</span>
-              <span>YouTube throttles cloud-hosted downloads, so the resulting video may come back at lower resolution. For best quality, download the video yourself and use <strong>Upload file</strong> instead.</span>
+              <span>YouTube (and sometimes Instagram/TikTok) throttle cloud-hosted downloads, so the resulting video may come back at lower resolution or fail outright. For best quality, download the video yourself and use <strong>Upload file</strong> instead.</span>
             </p>
             <p class="singing-only text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-2 py-1.5 flex items-start gap-1.5">
               <span class="font-semibold">Singing tip:</span>
-              <span>Search YouTube for "<em>&lt;song name&gt; karaoke</em>" or "<em>&lt;song name&gt; instrumental</em>" and use that as the source — the music is already vocals-free, so you can practice over the backing track without anything fighting your voice.</span>
+              <span>Search "<em>&lt;song name&gt; karaoke</em>" or "<em>&lt;song name&gt; instrumental</em>" on YouTube and use that as the source — the music is already vocals-free, so you can practice over the backing track without anything fighting your voice.</span>
             </p>
           </div>
           <div id="source-upload" class="hidden space-y-2">
@@ -567,7 +567,7 @@
           </div>
 
           <!-- Crop row: always visible. Inputs are inert until a video loads
-               (YouTube URLs can be cropped on the second pass; locally-picked
+               (Remote URLs can be cropped on the second pass; locally-picked
                 files unlock cropping immediately on preview). -->
           <div id="crop-row" class="border-t border-slate-200 pt-3 space-y-2">
             <div class="flex items-center justify-between">
@@ -575,7 +575,7 @@
               <span id="crop-duration" class="text-xs text-slate-500 font-mono">Full video</span>
             </div>
             <p id="crop-hint" class="text-[11px] text-slate-500">
-              Pick a local file to crop before processing, or process a YouTube URL once and re-process with crop bounds.
+              Pick a local file to crop before processing, or process a URL once and re-process with crop bounds.
             </p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label class="block text-sm">
@@ -773,7 +773,7 @@
                  mirror. Stays muted so we never echo the user's mic. -->
             <video
               id="webcam-video"
-              class="hidden absolute inset-0 w-full h-full object-cover z-[4]"
+              class="hidden absolute inset-0 w-full h-full object-contain bg-black z-[4]"
               style="transform: scaleX(-1)"
               autoplay
               playsinline
@@ -847,7 +847,7 @@
               </div>
               <h3 class="text-lg font-semibold text-white mb-1">Get started</h3>
               <p class="text-sm max-w-xs">
-                Paste a YouTube link or upload a video above, then click
+                Paste a video URL or upload a file above, then click
                 <span class="text-indigo-300 font-medium">Process Video</span>.
               </p>
               <p class="text-xs text-slate-400 mt-3">
@@ -904,30 +904,31 @@
 
             <button
               id="mirror-btn"
-              class="dance-only px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              class="dance-only px-3 sm:px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              title="Flip the video horizontally"
             >
-              Mirror Mode: <span id="mirror-state">Off</span>
+              <span class="hidden sm:inline">Mirror Mode: </span><span class="sm:hidden">Mirror </span><span id="mirror-state">Off</span>
             </button>
 
             <button
               id="memory-btn"
-              class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              class="px-3 sm:px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
               title="Hide the video and practice from audio alone"
             >
-              Memory Mode: <span id="memory-state">Off</span>
+              <span class="hidden sm:inline">Memory Mode: </span><span class="sm:hidden">Memory </span><span id="memory-state">Off</span>
             </button>
 
             <button
               id="webcam-btn"
-              class="dance-only hidden px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              class="dance-only hidden px-3 sm:px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
               title="Use your webcam as a mirror"
             >
-              Webcam Mirror: <span id="webcam-state">Off</span>
+              <span class="hidden sm:inline">Webcam Mirror: </span><span class="sm:hidden">Webcam </span><span id="webcam-state">Off</span>
             </button>
 
             <button
               id="record-btn"
-              class="px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
+              class="px-3 sm:px-4 py-2 rounded-md border border-slate-300 bg-white text-sm font-medium hover:bg-slate-100"
               title="Record yourself practicing — appears in this video's library card after"
             >
               <span id="record-dot" class="inline-block w-2 h-2 rounded-full bg-rose-500 mr-1 align-middle"></span>

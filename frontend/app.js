@@ -358,7 +358,7 @@ function setAddVideoCollapsed(collapsed) {
   addVideoCollapseBtn.title = collapsed ? "Expand to add another video" : "Collapse";
   addVideoTagline.textContent = collapsed
     ? "Click + to add another video."
-    : "Paste a YouTube link or upload a file, optionally crop, then process.";
+    : "Paste a video URL (YouTube, Instagram, TikTok) or upload a file, optionally crop, then process.";
 }
 
 addVideoCollapseBtn.addEventListener("click", () =>
@@ -1661,11 +1661,11 @@ function updateProcessSubtitle() {
   if (currentSource === "youtube") {
     const url = youtubeUrlInput.value.trim();
     if (!url) {
-      processSubtitle.textContent = "Paste a YouTube URL to enable.";
+      processSubtitle.textContent = "Paste a video URL to enable.";
       processVideoBtn.disabled = true;
       return;
     }
-    prefix = `YouTube ${youtubeQualitySelect.value}`;
+    prefix = `URL ${youtubeQualitySelect.value}`;
   } else {
     if (!pendingFiles.length) {
       processSubtitle.textContent = "Choose a video file to enable.";
@@ -1762,7 +1762,7 @@ function applyProcessResponse(data) {
   if (data.height) {
     msg += ` Got ${data.height}p.`;
     if (data.height < 480) {
-      msg += " YouTube throttled the source — upload the file directly for better quality.";
+      msg += " The source was throttled — upload the file directly for better quality.";
     }
   }
   if (data.tuning && data.tuning.example_count > 0) {
@@ -2243,10 +2243,17 @@ function renderLibrary() {
     const dur = entry.duration ? `${entry.duration.toFixed(1)}s` : "—";
     const isOwner = entry.permission === "owner";
     const canEdit = entry.permission === "owner" || entry.permission === "edit";
-    const sourceBadge =
-      entry.source === "youtube"
-        ? '<span class="text-[10px] uppercase tracking-wide bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">YouTube</span>'
-        : '<span class="text-[10px] uppercase tracking-wide bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">Upload</span>';
+    const sourceBadgeStyles = {
+      youtube: ["bg-rose-100 text-rose-700", "YouTube"],
+      instagram: ["bg-pink-100 text-pink-700", "Instagram"],
+      tiktok: ["bg-slate-900 text-white", "TikTok"],
+      url: ["bg-violet-100 text-violet-700", "URL"],
+      upload: ["bg-sky-100 text-sky-700", "Upload"],
+      recording: ["bg-emerald-100 text-emerald-700", "Recording"],
+    };
+    const [badgeClass, badgeLabel] =
+      sourceBadgeStyles[entry.source] || sourceBadgeStyles.upload;
+    const sourceBadge = `<span class="text-[10px] uppercase tracking-wide ${badgeClass} px-1.5 py-0.5 rounded">${badgeLabel}</span>`;
     const editedBadge = entry.last_edited_at
       ? `<span class="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded" title="Edited ${formatRelativeTime(entry.last_edited_at)}">edited</span>`
       : "";
