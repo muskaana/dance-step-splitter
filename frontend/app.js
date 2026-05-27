@@ -4,7 +4,6 @@ const video = document.getElementById("player");
 const segmentGrid = document.getElementById("segment-grid");
 const segmentCount = document.getElementById("segment-count");
 const selectAllSegmentsBtn = document.getElementById("select-all-segments-btn");
-const snapToBeatInput = document.getElementById("snap-to-beat");
 const mirrorBtn = document.getElementById("mirror-btn");
 const memoryBtn = document.getElementById("memory-btn");
 const memoryState = document.getElementById("memory-state");
@@ -1861,7 +1860,10 @@ async function processYouTube(url, crop) {
     url,
     quality: youtubeQualitySelect.value,
     kind: pendingKind,
-    snap_to_beat: pendingKind === "dance" && !!snapToBeatInput?.checked,
+    // Snap-to-beat is always on for dance mode — it's a strict improvement
+    // over motion-only when beat detection succeeds, and falls back cleanly
+    // when it doesn't, so there's no reason to expose it as a toggle.
+    snap_to_beat: pendingKind === "dance",
   };
   if (crop) {
     body.start_time = crop.start;
@@ -1883,7 +1885,7 @@ async function processFile(file, crop) {
   const form = new FormData();
   form.append("file", file);
   form.append("kind", pendingKind);
-  if (pendingKind === "dance" && snapToBeatInput?.checked) {
+  if (pendingKind === "dance") {
     form.append("snap_to_beat", "true");
   }
   if (crop) {
