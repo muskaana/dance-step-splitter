@@ -8,6 +8,7 @@ default behaviour.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -21,6 +22,21 @@ def _is_youtube_url(url: str) -> bool:
     except ValueError:
         return False
     return host.endswith("youtube.com") or host == "youtu.be" or host.endswith(".youtu.be")
+
+
+def _host_label(url: str) -> str:
+    """Short, user-facing host name for error messages ("Instagram", "TikTok", …)."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return "this host"
+    if host.endswith("youtube.com") or host.endswith("youtu.be"):
+        return "YouTube"
+    if host.endswith("instagram.com"):
+        return "Instagram"
+    if host.endswith("tiktok.com"):
+        return "TikTok"
+    return host or "this host"
 
 Quality = Literal["480p", "720p", "1080p"]
 
@@ -119,9 +135,15 @@ def download_video(
     #   2. Cookie-authenticated attempts using each available local browser.
     # If the caller pinned a specific browser, we try only that one (after the
     # anonymous attempts) — usually because they already know it works.
-    cookie_browsers: tuple[str | None, ...] = (
-        (cookies_from_browser,) if cookies_from_browser else _COOKIE_BROWSERS
-    )
+    # On Linux (Fly's image) we skip the browser-cookie rungs entirely — none
+    # of those browsers ship in the container, so every attempt would just
+    # raise "could not find <X> cookies database" and bury the real error.
+    if cookies_from_browser:
+        cookie_browsers: tuple[str | None, ...] = (cookies_from_browser,)
+    elif sys.platform == "darwin":
+        cookie_browsers = _COOKIE_BROWSERS
+    else:
+        cookie_browsers = ()
     attempts: list[dict] = []
 
     cookies_path = Path(cookies_file) if cookies_file else None
@@ -163,7 +185,12 @@ def download_video(
         for browser in cookie_browsers:
             attempts.append({"cookiesfrombrowser": (browser,)})
 
+    # `last_error` is whatever raised most recently; `first_download_error`
+    # is the first error from an attempt that actually reached yt-dlp's
+    # extractor (i.e. not a "cookies database missing" setup failure).
+    # We prefer the latter for the user-facing message — it's the real cause.
     last_error: Exception | None = None
+    first_download_error: Exception | None = None
     for extra in attempts:
         opts = {**base_opts, **extra}
         try:
@@ -199,18 +226,34 @@ def download_video(
             # Includes DownloadError plus cookies_from_browser errors when a
             # given browser isn't installed / locked / unreadable.
             last_error = e
+            msg = str(e).lower()
+            is_cookie_setup_error = (
+                "could not find" in msg and "cookies database" in msg
+            ) or "operation not permitted" in msg
+            if first_download_error is None and not is_cookie_setup_error:
+                first_download_error = e
             continue
 
+    real_error = first_download_error or last_error
+    host_label = _host_label(url)
+    has_cookies_file = cookies_path is not None and cookies_path.exists()
+    cookies_hint = (
+        f"Add signed-in {host_label} cookies to the cookies.txt on the Fly "
+        "volume (cat them into /persistent/data/cookies.txt)."
+        if not has_cookies_file
+        else f"The cookies.txt on the volume doesn't include valid {host_label} "
+        "credentials, or the session has expired — re-export and replace it."
+    )
     if is_youtube:
         raise RuntimeError(
-            "Could not download video — YouTube blocked every player client and no "
-            "usable browser cookies were found. Try signing into YouTube in Safari "
-            f"or Chrome on this machine, then retry. Last error: {last_error}"
+            f"Could not download YouTube video. YouTube blocked every player "
+            f"client and cookie fallback. {cookies_hint} Real error: {real_error}"
         )
     raise RuntimeError(
-        f"Could not download video from {url}. yt-dlp failed even with fallback "
-        f"cookies. The post may be private, deleted, or region-locked. "
-        f"Last error: {last_error}"
+        f"Could not download from {host_label}. Anonymous cloud-IP requests are "
+        f"usually rate-limited or login-walled here. {cookies_hint} "
+        f"(The post may also be private, deleted, or region-locked.) "
+        f"Real error: {real_error}"
     )
 
 
