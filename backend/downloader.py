@@ -134,6 +134,11 @@ def download_video(
         "http_headers": {"User-Agent": _BROWSER_UA},
         "retries": 3,
         "fragment_retries": 3,
+        # Without this, yt-dlp logs "has already been downloaded" and skips —
+        # which means a user re-processing the same URL keeps whatever file is
+        # already on disk (e.g. an older silent version). Force re-download
+        # so the latest format selector / fixes always take effect.
+        "overwrites": True,
     }
 
     # Build the rung list:
