@@ -260,6 +260,29 @@
       </div>
     </div>
 
+    <!-- Copy-segments modal — pick a source library entry and replace the
+         currently-loaded video's segments with that entry's boundaries.
+         Times are absolute and clipped to the target's duration. -->
+    <div
+      id="copy-segments-modal"
+      class="hidden fixed inset-0 z-40 bg-slate-900/70 items-center justify-center p-4"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-4 sm:p-6 max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-lg font-bold text-slate-900">Copy segments from…</h2>
+          <button id="copy-segments-close" class="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+        </div>
+        <p class="text-xs text-slate-500 mb-3">
+          Replaces the current video's segments with the boundaries from another
+          entry. Labels reset to generic names; times are clipped to fit this
+          video's duration. Best when both videos are the same song.
+        </p>
+        <div id="copy-segments-list" class="space-y-1.5 max-h-[60vh] overflow-y-auto">
+          <p class="text-xs text-slate-400 text-center py-6">No other library entries yet.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Share modal — owner-only management of who can view/edit a library entry. -->
     <div
       id="share-modal"
@@ -990,13 +1013,20 @@
           <div class="bg-white rounded-xl shadow-sm p-4 h-full">
             <div class="flex items-center justify-between mb-3">
               <h2 class="font-semibold text-slate-900">Segments</h2>
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-3 flex-wrap">
                 <span id="segment-count" class="text-xs text-slate-500">0 selected</span>
                 <button
                   id="select-all-segments-btn"
                   class="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
                 >
                   Select all
+                </button>
+                <button
+                  id="copy-segments-btn"
+                  class="hidden text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                  title="Replace this video's segments with those from another library entry"
+                >
+                  Copy from…
                 </button>
                 <button
                   id="edit-segments-btn"

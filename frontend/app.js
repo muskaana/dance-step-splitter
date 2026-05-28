@@ -4,6 +4,10 @@ const video = document.getElementById("player");
 const segmentGrid = document.getElementById("segment-grid");
 const segmentCount = document.getElementById("segment-count");
 const selectAllSegmentsBtn = document.getElementById("select-all-segments-btn");
+const copySegmentsBtn = document.getElementById("copy-segments-btn");
+const copySegmentsModal = document.getElementById("copy-segments-modal");
+const copySegmentsClose = document.getElementById("copy-segments-close");
+const copySegmentsList = document.getElementById("copy-segments-list");
 const mirrorBtn = document.getElementById("mirror-btn");
 const memoryBtn = document.getElementById("memory-btn");
 const memoryState = document.getElementById("memory-state");
@@ -286,6 +290,14 @@ function applyPermissionGating() {
   // Edit button in the segments header.
   if (editSegmentsBtn) {
     editSegmentsBtn.classList.toggle("hidden", !canEdit);
+  }
+  // Copy-from button: only useful when the user can write to this entry
+  // AND there's a currently-loaded video to copy onto.
+  if (copySegmentsBtn) {
+    copySegmentsBtn.classList.toggle(
+      "hidden",
+      !canEdit || !currentVideoId,
+    );
   }
   // Share-current button: only owners can manage sharing, and only when
   // there's actually a loaded video.
@@ -3086,6 +3098,102 @@ tutorialOverlay.addEventListener("click", (e) => {
 /* ---------------------------------------------------------------- */
 /* Share modal                                                       */
 /* ---------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------- */
+/* Copy-segments modal — replace the loaded video's segments with    */
+/* the boundaries from another library entry.                        */
+/* ---------------------------------------------------------------- */
+
+function openCopySegmentsModal() {
+  if (!currentVideoId) return;
+  // Filter out the current entry + recordings (their segments are usually
+  // generated post-hoc and aren't useful as templates).
+  const candidates = (libraryCache || []).filter(
+    (e) => e.video_id !== currentVideoId && e.source !== "recording",
+  );
+
+  if (!candidates.length) {
+    copySegmentsList.innerHTML =
+      '<p class="text-xs text-slate-400 text-center py-6">No other library entries yet.</p>';
+  } else {
+    copySegmentsList.innerHTML = "";
+    for (const entry of candidates) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className =
+        "w-full text-left p-2.5 rounded-md border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50 transition flex items-center justify-between gap-2";
+      const dur = entry.duration ? `${entry.duration.toFixed(1)}s` : "—";
+      row.innerHTML = `
+        <span class="min-w-0">
+          <span class="block text-sm font-medium text-slate-900 truncate">${escapeAttr(entry.title || entry.video_id)}</span>
+          <span class="block text-[11px] text-slate-500">${entry.segment_count || 0} segments · ${dur}</span>
+        </span>
+        <span class="text-xs text-indigo-600 font-medium flex-shrink-0">Copy →</span>
+      `;
+      row.addEventListener("click", () => applyCopySegments(entry));
+      copySegmentsList.appendChild(row);
+    }
+  }
+  copySegmentsModal.classList.remove("hidden");
+  copySegmentsModal.classList.add("flex");
+}
+
+function closeCopySegmentsModal() {
+  copySegmentsModal.classList.add("hidden");
+  copySegmentsModal.classList.remove("flex");
+}
+
+async function applyCopySegments(sourceEntry) {
+  if (!currentVideoId || !sourceEntry?.video_id) return;
+  const hasExisting = allSegments && allSegments.length > 0;
+  if (hasExisting) {
+    const ok = confirm(
+      `Replace this video's ${allSegments.length} segments with the ${sourceEntry.segment_count || "?"} from "${sourceEntry.title || sourceEntry.video_id}"?`,
+    );
+    if (!ok) return;
+  }
+  try {
+    const res = await fetch(
+      `/api/library/${encodeURIComponent(currentVideoId)}/copy-segments-from`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_video_id: sourceEntry.video_id }),
+      },
+    );
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    allSegments = data.segments || [];
+    clearSelection();
+    renderSegments(allSegments);
+    closeCopySegmentsModal();
+    let msg = `Copied ${data.copied_count} segments from "${sourceEntry.title || sourceEntry.video_id}".`;
+    if (data.dropped_count > 0) {
+      msg += ` ${data.dropped_count} dropped (past this video's end).`;
+    }
+    showProcessingSuccess(msg);
+  } catch (err) {
+    console.error(err);
+    alert(`Copy failed: ${err.message}`);
+  }
+}
+
+if (copySegmentsBtn) {
+  copySegmentsBtn.addEventListener("click", openCopySegmentsModal);
+}
+if (copySegmentsClose) {
+  copySegmentsClose.addEventListener("click", closeCopySegmentsModal);
+}
+if (copySegmentsModal) {
+  copySegmentsModal.addEventListener("click", (e) => {
+    // Click on backdrop (not the inner card) closes the modal.
+    if (e.target === copySegmentsModal) closeCopySegmentsModal();
+  });
+}
+
 
 function openShareModal(entry) {
   shareVideoId = entry.video_id;

@@ -1384,6 +1384,100 @@ async def update_library_entry(
     return JSONResponse({**(updated or {}), "segments": out})
 
 
+class CopySegmentsRequest(BaseModel):
+    source_video_id: str
+
+
+@app.post("/api/library/{video_id}/copy-segments-from")
+async def copy_segments_from(
+    video_id: str,
+    payload: CopySegmentsRequest,
+    user: auth.User = Depends(get_current_user),
+) -> JSONResponse:
+    """Replace the target entry's segments with the source entry's boundaries.
+
+    Copies only start/end times — labels are reset to generic ones, lyrics
+    are not carried over. Use case: same song, different recording — saves
+    re-doing all the boundary editing.
+
+    The caller must own/have-edit on the target; they must have at least
+    view access on the source.
+    """
+    target_owner_id, target_permission = resolve_entry_access(user.id, video_id)
+    if target_permission == "view":
+        raise HTTPException(
+            status_code=403,
+            detail="You have view-only access to this video — can't replace its segments.",
+        )
+
+    source_owner_id, _ = resolve_entry_access(user.id, payload.source_video_id)
+
+    source_seg_path = user_data_dir(source_owner_id) / f"{payload.source_video_id}.json"
+    if not source_seg_path.exists():
+        raise HTTPException(
+            status_code=404, detail="Source segments file missing."
+        )
+    try:
+        source_segments = json.loads(source_seg_path.read_text())
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Source segments JSON corrupt.")
+    if not isinstance(source_segments, list) or not source_segments:
+        raise HTTPException(status_code=400, detail="Source has no segments to copy.")
+
+    # Clip to target's known duration so we don't end up with segments past
+    # the end of a shorter target video.
+    target_entry = next(
+        (i for i in _read_library(target_owner_id) if i.get("video_id") == video_id),
+        None,
+    )
+    target_duration = float(target_entry.get("duration") or 0.0) if target_entry else 0.0
+
+    out: list[dict] = []
+    for s in source_segments:
+        start = float(s.get("start", 0))
+        end = float(s.get("end", 0))
+        if target_duration > 0:
+            start = min(start, target_duration)
+            end = min(end, target_duration)
+        if end <= start:
+            continue  # zero or negative-length segment after clipping → drop
+        out.append({
+            "id": len(out) + 1,
+            "label": f"Segment {len(out) + 1}",
+            "start": round(start, 2),
+            "end": round(end, 2),
+        })
+
+    if not out:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to copy — every source segment falls past the target's duration.",
+        )
+
+    target_data_dir = user_data_dir(target_owner_id)
+    (target_data_dir / f"{video_id}.json").write_text(json.dumps(out, indent=2))
+    # The viewer's local sequence mirror, so /api/sequence stays current.
+    user_data_dir(user.id).joinpath("sequence.json").write_text(json.dumps(out, indent=2))
+
+    updated = _update_library_entry(
+        target_owner_id,
+        video_id,
+        {
+            "segment_count": len(out),
+            "last_edited_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return JSONResponse(
+        {
+            **(updated or {}),
+            "segments": out,
+            "copied_from": payload.source_video_id,
+            "copied_count": len(out),
+            "dropped_count": len(source_segments) - len(out),
+        }
+    )
+
+
 class LibraryPatch(BaseModel):
     """Partial update — only fields the client sets are touched."""
     title: Optional[str] = None
